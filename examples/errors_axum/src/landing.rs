@@ -3,11 +3,6 @@ use leptos::*;
 use leptos_meta::*;
 use leptos_router::*;
 
-#[cfg(feature = "ssr")]
-pub fn register_server_functions() {
-    _ = CauseInternalServerError::register();
-}
-
 #[server(CauseInternalServerError, "/api")]
 pub async fn cause_internal_server_error() -> Result<(), ServerFnError> {
     // fake API delay
@@ -39,10 +34,7 @@ pub fn App(cx: Scope) -> impl IntoView {
             </header>
             <main>
                 <Routes>
-                    <Route path="" view=|cx| view! {
-                        cx,
-                        <ExampleErrors/>
-                    }/>
+                    <Route path="" view=|cx| view! { cx, <ExampleErrors/> }/>
                 </Routes>
             </main>
         </Router>
@@ -71,7 +63,7 @@ pub fn ExampleErrors(cx: Scope) -> impl IntoView {
         // note that the error boundaries could be placed above in the Router or lower down
         // in a particular route. The generated errors on the entire page contribute to the
         // final status code sent by the server when producing ssr pages.
-        <ErrorBoundary fallback=|cx, errors| view!{cx, <ErrorTemplate errors=errors/>}>
+        <ErrorBoundary fallback=|cx, errors| view!{ cx, <ErrorTemplate errors=errors/>}>
             <ReturnsError/>
         </ErrorBoundary>
         </div>

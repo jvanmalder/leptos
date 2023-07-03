@@ -12,13 +12,9 @@
 //!
 //! And you can do all three of these **using the same Leptos code.**
 //!
-//! # `nightly` Note
-//! Most of the examples assume you’re using `nightly` Rust. If you’re on stable, note the following:
-//! 1. You need to enable the `"stable"` flag in `Cargo.toml`: `leptos = { version = "0.0", features = ["stable"] }`
-//! 2. `nightly` enables the function call syntax for accessing and setting signals. If you’re using `stable`,
-//!    you’ll just call `.get()`, `.set()`, or `.update()` manually. Check out the
-//!    [`counters_stable` example](https://github.com/leptos-rs/leptos/blob/main/examples/counters_stable/src/main.rs)
-//!    for examples of the correct API.
+//! Take a look at the [Leptos Book](https://leptos-rs.github.io/leptos/) for a walkthrough of the framework.
+//! Join us on our [Discord Channel](https://discord.gg/v38Eef6sWG) to see what the community is building.
+//! Explore our [Examples](https://github.com/leptos-rs/leptos/tree/main/examples) to see Leptos in action.
 //!
 //! # Learning by Example
 //!
@@ -80,12 +76,10 @@
 //! - **Server Functions**: the [server](crate::leptos_server) macro, [create_action], and [create_server_action]
 //!
 //! # Feature Flags
-//! - `csr` (*Default*) Client-side rendering: Generate DOM nodes in the browser
+//! - `nightly`: On `nightly` Rust, enables the function-call syntax for signal getters and setters.
+//! - `csr` Client-side rendering: Generate DOM nodes in the browser
 //! - `ssr` Server-side rendering: Generate an HTML string (typically on the server)
 //! - `hydrate` Hydration: use this to add interactivity to an SSRed Leptos app
-//! - `stable` By default, Leptos requires `nightly` Rust, which is what allows the ergonomics
-//!   of calling signals as functions. If you need to use `stable`, you will need to call `.get()`
-//!   and `.set()` manually.
 //! - `serde` (*Default*) In SSR/hydrate mode, uses [serde](https://docs.rs/serde/latest/serde/) to serialize resources and send them
 //!   from the server to the client.
 //! - `serde-lite` In SSR/hydrate mode, uses [serde-lite](https://docs.rs/serde-lite/latest/serde_lite/) to serialize resources and send them
@@ -118,7 +112,7 @@
 //!         <div>
 //!             <button on:click=clear>"Clear"</button>
 //!             <button on:click=decrement>"-1"</button>
-//!             <span>"Value: " {move || value().to_string()} "!"</span>
+//!             <span>"Value: " {move || value.get().to_string()} "!"</span>
 //!             <button on:click=increment>"+1"</button>
 //!         </div>
 //!     }
@@ -143,6 +137,8 @@
 
 mod additional_attributes;
 pub use additional_attributes::*;
+mod await_;
+pub use await_::*;
 pub use leptos_config::{self, get_configuration, LeptosOptions};
 #[cfg(not(all(
     target_arch = "wasm32",
@@ -165,22 +161,32 @@ pub use leptos_dom::{
     Class, CollectView, Errors, Fragment, HtmlElement, IntoAttribute,
     IntoClass, IntoProperty, IntoStyle, IntoView, NodeRef, Property, View,
 };
-pub use leptos_macro::*;
+
+/// Types to make it easier to handle errors in your application.
+pub mod error {
+    pub use server_fn::error::{Error, Result};
+}
+#[cfg(not(any(target_arch = "wasm32", feature = "template_macro")))]
+pub use leptos_macro::view as template;
+pub use leptos_macro::{component, server, slot, view, Params};
 pub use leptos_reactive::*;
 pub use leptos_server::{
     self, create_action, create_multi_action, create_server_action,
     create_server_multi_action, Action, MultiAction, ServerFn, ServerFnError,
+    ServerFnErrorErr,
 };
 pub use server_fn::{self, ServerFn as _};
 pub use typed_builder;
+#[cfg(all(target_arch = "wasm32", feature = "template_macro"))]
+pub use {leptos_macro::template, wasm_bindgen, web_sys};
 mod error_boundary;
 pub use error_boundary::*;
 mod for_loop;
 mod show;
 pub use for_loop::*;
 pub use show::*;
-mod suspense;
-pub use suspense::*;
+mod suspense_component;
+pub use suspense_component::*;
 mod text_prop;
 mod transition;
 pub use text_prop::TextProp;
@@ -230,11 +236,84 @@ pub trait Props {
     fn builder() -> Self::Builder;
 }
 
-impl<P, F, R> Component<P> for F where F: FnOnce(::leptos::Scope, P) -> R {}
+#[doc(hidden)]
+pub trait PropsOrNoPropsBuilder {
+    type Builder;
+    fn builder_or_not() -> Self::Builder;
+}
 
 #[doc(hidden)]
-pub fn component_props_builder<P: Props>(
+#[derive(Copy, Clone, Debug, Default)]
+pub struct EmptyPropsBuilder {}
+
+impl EmptyPropsBuilder {
+    pub fn build(self) {}
+}
+
+impl<P: Props> PropsOrNoPropsBuilder for P {
+    type Builder = <P as Props>::Builder;
+    fn builder_or_not() -> Self::Builder {
+        Self::builder()
+    }
+}
+
+impl PropsOrNoPropsBuilder for EmptyPropsBuilder {
+    type Builder = EmptyPropsBuilder;
+    fn builder_or_not() -> Self::Builder {
+        EmptyPropsBuilder {}
+    }
+}
+
+impl<F, R> Component<EmptyPropsBuilder> for F where
+    F: FnOnce(::leptos::Scope) -> R
+{
+}
+
+impl<P, F, R> Component<P> for F
+where
+    F: FnOnce(::leptos::Scope, P) -> R,
+    P: Props,
+{
+}
+
+#[doc(hidden)]
+pub fn component_props_builder<P: PropsOrNoPropsBuilder>(
     _f: &impl Component<P>,
-) -> <P as Props>::Builder {
-    <P as Props>::builder()
+) -> <P as PropsOrNoPropsBuilder>::Builder {
+    <P as PropsOrNoPropsBuilder>::builder_or_not()
+}
+
+#[doc(hidden)]
+pub fn component_view<P>(
+    f: impl ComponentConstructor<P>,
+    cx: Scope,
+    props: P,
+) -> View {
+    f.construct(cx, props)
+}
+
+#[doc(hidden)]
+pub trait ComponentConstructor<P> {
+    fn construct(self, cx: Scope, props: P) -> View;
+}
+
+impl<Func, V> ComponentConstructor<()> for Func
+where
+    Func: FnOnce(Scope) -> V,
+    V: IntoView,
+{
+    fn construct(self, cx: Scope, (): ()) -> View {
+        (self)(cx).into_view(cx)
+    }
+}
+
+impl<Func, V, P> ComponentConstructor<P> for Func
+where
+    Func: FnOnce(Scope, P) -> V,
+    V: IntoView,
+    P: PropsOrNoPropsBuilder,
+{
+    fn construct(self, cx: Scope, props: P) -> View {
+        (self)(cx, props).into_view(cx)
+    }
 }

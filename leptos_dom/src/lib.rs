@@ -1,7 +1,7 @@
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]
-#![cfg_attr(not(feature = "stable"), feature(fn_traits))]
-#![cfg_attr(not(feature = "stable"), feature(unboxed_closures))]
+#![cfg_attr(feature = "nightly", feature(fn_traits))]
+#![cfg_attr(feature = "nightly", feature(unboxed_closures))]
 
 //! The DOM implementation for `leptos`.
 
@@ -376,7 +376,7 @@ impl Element {
               is_void: el.is_void(),
               attrs: Default::default(),
               children: Default::default(),
-              id: el.hydration_id().clone(),
+              id: *el.hydration_id(),
               #[cfg(debug_assertions)]
               view_marker: None
             }
@@ -1125,7 +1125,7 @@ viewable_primitive![
 ];
 
 cfg_if! {
-  if #[cfg(not(feature = "stable"))] {
+  if #[cfg(feature = "nightly")] {
     viewable_primitive! {
         std::backtrace::Backtrace
     }

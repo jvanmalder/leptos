@@ -4,15 +4,15 @@ use convert_case::{
     Casing,
 };
 use itertools::Itertools;
+use leptos_hot_reload::parsing::value_to_string;
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::{format_ident, quote_spanned, ToTokens, TokenStreamExt};
 use syn::{
     parse::Parse, parse_quote, spanned::Spanned,
     AngleBracketedGenericArguments, Attribute, FnArg, GenericArgument, Item,
-    ItemFn, Lit, LitStr, Meta, MetaNameValue, Pat, PatIdent, Path,
-    PathArguments, ReturnType, Stmt, Type, TypePath, Visibility,
+    ItemFn, LitStr, Meta, Pat, PatIdent, Path, PathArguments, ReturnType, Stmt,
+    Type, TypePath, Visibility,
 };
-
 pub struct Model {
     is_transparent: bool,
     docs: Docs,
@@ -56,14 +56,17 @@ impl Parse for Model {
 
         // We need to remove the `#[doc = ""]` and `#[builder(_)]`
         // attrs from the function signature
-        drain_filter(&mut item.attrs, |attr| {
-            attr.path == parse_quote!(doc) || attr.path == parse_quote!(prop)
+        drain_filter(&mut item.attrs, |attr| match &attr.meta {
+            Meta::NameValue(attr) => attr.path == parse_quote!(doc),
+            Meta::List(attr) => attr.path == parse_quote!(prop),
+            _ => false,
         });
         item.sig.inputs.iter_mut().for_each(|arg| {
             if let FnArg::Typed(ty) = arg {
-                drain_filter(&mut ty.attrs, |attr| {
-                    attr.path == parse_quote!(doc)
-                        || attr.path == parse_quote!(prop)
+                drain_filter(&mut ty.attrs, |attr| match &attr.meta {
+                    Meta::NameValue(attr) => attr.path == parse_quote!(doc),
+                    Meta::List(attr) => attr.path == parse_quote!(prop),
+                    _ => false,
                 });
             }
         });
@@ -128,6 +131,8 @@ impl ToTokens for Model {
             ret,
         } = self;
 
+        let no_props = props.len() == 1;
+
         let mut body = body.to_owned();
 
         // check for components that end ;
@@ -153,7 +158,9 @@ impl ToTokens for Model {
         #[allow(clippy::redundant_clone)] // false positive
         let body_name = body.sig.ident.clone();
 
-        let (_, generics, where_clause) = body.sig.generics.split_for_impl();
+        let (impl_generics, generics, where_clause) =
+            body.sig.generics.split_for_impl();
+
         let lifetimes = body.sig.generics.lifetimes();
 
         let props_name = format_ident!("{name}Props");
@@ -210,6 +217,42 @@ impl ToTokens for Model {
             }
         };
 
+        let props_arg = if no_props {
+            quote! {}
+        } else {
+            quote! {
+                props: #props_name #generics
+            }
+        };
+
+        let destructure_props = if no_props {
+            quote! {}
+        } else {
+            quote! {
+                let #props_name {
+                    #prop_names
+                } = props;
+            }
+        };
+
+        let into_view = if no_props {
+            quote! {
+                impl #impl_generics ::leptos::IntoView for #props_name #generics #where_clause {
+                    fn into_view(self, cx: ::leptos::Scope) -> ::leptos::View {
+                        #name(cx).into_view(cx)
+                    }
+                }
+            }
+        } else {
+            quote! {
+                impl #impl_generics ::leptos::IntoView for #props_name #generics #where_clause {
+                    fn into_view(self, cx: ::leptos::Scope) -> ::leptos::View {
+                        #name(cx, self).into_view(cx)
+                    }
+                }
+            }
+        };
+
         let output = quote! {
             #[doc = #builder_name_doc]
             #[doc = ""]
@@ -217,39 +260,33 @@ impl ToTokens for Model {
             #component_fn_prop_docs
             #[derive(::leptos::typed_builder::TypedBuilder)]
             #[builder(doc)]
-            #vis struct #props_name #generics #where_clause {
+            #vis struct #props_name #impl_generics #where_clause {
                 #prop_builder_fields
             }
 
-            impl #generics ::leptos::Props for #props_name #generics #where_clause {
+            impl #impl_generics ::leptos::Props for #props_name #generics #where_clause {
                 type Builder = #props_builder_name #generics;
                 fn builder() -> Self::Builder {
                     #props_name::builder()
                 }
             }
 
-            impl #generics ::leptos::IntoView for #props_name #generics #where_clause {
-                fn into_view(self, cx: ::leptos::Scope) -> ::leptos::View {
-                    #name(cx, self).into_view(cx)
-                }
-            }
+            #into_view
 
             #docs
             #component_fn_prop_docs
             #[allow(non_snake_case, clippy::too_many_arguments)]
             #tracing_instrument_attr
-            #vis fn #name #generics (
+            #vis fn #name #impl_generics (
                 #[allow(unused_variables)]
                 #scope_name: ::leptos::Scope,
-                props: #props_name #generics
+                #props_arg
             ) #ret #(+ #lifetimes)*
             #where_clause
             {
                 #body
 
-                let #props_name {
-                    #prop_names
-                } = props;
+                #destructure_props
 
                 #tracing_span_expr
 
@@ -400,12 +437,20 @@ impl Docs {
 
         let mut attrs = attrs
             .iter()
-            .filter_map(|attr| attr.path.is_ident("doc").then(|| {
-                let Ok(Meta::NameValue(MetaNameValue { lit: Lit::Str(doc), .. })) = attr.parse_meta() else {
-                    abort!(attr, "expected doc comment to be string literal");
+            .filter_map(|attr| {
+                let Meta::NameValue(attr ) = &attr.meta else {
+                    return None
                 };
-                (doc.value(), doc.span())
-            }))
+                if !attr.path.is_ident("doc") {
+                    return None
+                }
+
+                let Some(val) = value_to_string(&attr.value) else {
+                    abort!(attr, "expected string literal in value of doc comment");
+                };
+
+                Some((val, attr.path.span()))
+            })
             .flat_map(map)
             .collect_vec();
 

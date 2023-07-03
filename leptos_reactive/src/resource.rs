@@ -5,8 +5,9 @@ use crate::{
     runtime::{with_runtime, RuntimeId},
     serialization::Serializable,
     spawn::spawn_local,
-    use_context, Memo, ReadSignal, Scope, ScopeProperty, SignalGetUntracked,
-    SignalSet, SignalUpdate, SignalWith, SuspenseContext, WriteSignal,
+    use_context, GlobalSuspenseContext, Memo, ReadSignal, Scope, ScopeProperty,
+    SignalGetUntracked, SignalSet, SignalUpdate, SignalWith, SuspenseContext,
+    WriteSignal,
 };
 use std::{
     any::Any,
@@ -50,7 +51,7 @@ use std::{
 /// # // `csr`, `hydrate`, and `ssr` all have issues here
 /// # // because we're not running in a browser or in Tokio. Let's just ignore it.
 /// # if false {
-/// let cats = create_resource(cx, how_many_cats, fetch_cat_picture_urls);
+/// let cats = create_resource(cx, move || how_many_cats.get(), fetch_cat_picture_urls);
 ///
 /// // when we read the signal, it contains either
 /// // 1) None (if the Future isn't ready yet) or
@@ -58,7 +59,7 @@ use std::{
 /// assert_eq!(cats.read(cx), Some(vec!["1".to_string()]));
 ///
 /// // when the signal's value changes, the `Resource` will generate and run a new `Future`
-/// set_how_many_cats(2);
+/// set_how_many_cats.set(2);
 /// assert_eq!(cats.read(cx), Some(vec!["2".to_string()]));
 /// # }
 /// # }).dispose();
@@ -210,7 +211,7 @@ where
         fetcher,
         resolved: Rc::new(Cell::new(resolved)),
         scheduled: Rc::new(Cell::new(false)),
-        preempted: Rc::new(Cell::new(false)),
+        version: Rc::new(Cell::new(0)),
         suspense_contexts: Default::default(),
         serializable,
     });
@@ -347,7 +348,7 @@ where
         fetcher,
         resolved: Rc::new(Cell::new(resolved)),
         scheduled: Rc::new(Cell::new(false)),
-        preempted: Rc::new(Cell::new(false)),
+        version: Rc::new(Cell::new(0)),
         suspense_contexts: Default::default(),
         serializable: ResourceSerialization::Local,
     });
@@ -607,7 +608,7 @@ impl<S, T> SignalUpdate<Option<T>> for Resource<S, T> {
         with_runtime(self.runtime, |runtime| {
             runtime.resource(self.id, |resource: &ResourceState<S, T>| {
                 if resource.loading.get_untracked() {
-                    resource.preempted.set(true);
+                    resource.version.set(resource.version.get() + 1);
                     for suspense_context in
                         resource.suspense_contexts.borrow().iter()
                     {
@@ -695,7 +696,7 @@ impl<S, T> SignalSet<T> for Resource<S, T> {
 /// # // `csr`, `hydrate`, and `ssr` all have issues here
 /// # // because we're not running in a browser or in Tokio. Let's just ignore it.
 /// # if false {
-/// let cats = create_resource(cx, how_many_cats, fetch_cat_picture_urls);
+/// let cats = create_resource(cx, move || how_many_cats.get(), fetch_cat_picture_urls);
 ///
 /// // when we read the signal, it contains either
 /// // 1) None (if the Future isn't ready yet) or
@@ -703,7 +704,7 @@ impl<S, T> SignalSet<T> for Resource<S, T> {
 /// assert_eq!(cats.read(cx), Some(vec!["1".to_string()]));
 ///
 /// // when the signal's value changes, the `Resource` will generate and run a new `Future`
-/// set_how_many_cats(2);
+/// set_how_many_cats.set(2);
 /// assert_eq!(cats.read(cx), Some(vec!["2".to_string()]));
 /// # }
 /// # }).dispose();
@@ -771,7 +772,7 @@ where
     fetcher: Rc<dyn Fn(S) -> Pin<Box<dyn Future<Output = T>>>>,
     resolved: Rc<Cell<bool>>,
     scheduled: Rc<Cell<bool>>,
-    preempted: Rc<Cell<bool>>,
+    version: Rc<Cell<usize>>,
     suspense_contexts: Rc<RefCell<HashSet<SuspenseContext>>>,
     serializable: ResourceSerialization,
 }
@@ -820,6 +821,7 @@ where
         f: impl FnOnce(&T) -> U,
         location: &'static Location<'static>,
     ) -> Option<U> {
+        let global_suspense_cx = use_context::<GlobalSuspenseContext>(cx);
         let suspense_cx = use_context::<SuspenseContext>(cx);
 
         let v = self
@@ -882,6 +884,24 @@ where
                     }
                 }
             }
+
+            if let Some(g) = &global_suspense_cx {
+                if let Ok(ref mut contexts) = suspense_contexts.try_borrow_mut()
+                {
+                    g.with_inner(|s| {
+                        if !contexts.contains(s) {
+                            contexts.insert(*s);
+
+                            if !has_value {
+                                s.increment(
+                                    serializable
+                                        != ResourceSerialization::Local,
+                                );
+                            }
+                        }
+                    })
+                }
+            }
         };
 
         create_isomorphic_effect(cx, increment);
@@ -904,7 +924,8 @@ where
             return;
         }
 
-        self.preempted.set(false);
+        let version = self.version.get() + 1;
+        self.version.set(version);
         self.scheduled.set(false);
 
         _ = self.source.try_with(|source| {
@@ -939,18 +960,17 @@ where
                 let resolved = self.resolved.clone();
                 let set_value = self.set_value;
                 let set_loading = self.set_loading;
-                let preempted = self.preempted.clone();
+                let last_version = self.version.clone();
                 async move {
                     let res = fut.await;
-                    resolved.set(true);
 
-                    if !preempted.get() {
+                    if version == last_version.get() {
+                        resolved.set(true);
+
                         set_value.update(|n| *n = Some(res));
-                    }
 
-                    set_loading.update(|n| *n = false);
+                        set_loading.update(|n| *n = false);
 
-                    if !preempted.get() {
                         for suspense_context in
                             suspense_contexts.borrow().iter()
                         {
@@ -959,7 +979,6 @@ where
                             );
                         }
                     }
-                    preempted.set(false);
                 }
             })
         });
@@ -1005,6 +1024,7 @@ where
     }
 }
 
+#[derive(Clone)]
 pub(crate) enum AnyResource {
     Unserializable(Rc<dyn UnserializableResource>),
     Serializable(Rc<dyn SerializableResource>),

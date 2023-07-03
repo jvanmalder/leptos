@@ -9,13 +9,7 @@ cfg_if! {
         use sqlx::{Connection, SqliteConnection};
 
         pub async fn db() -> Result<SqliteConnection, ServerFnError> {
-            SqliteConnection::connect("sqlite:Todos.db").await.map_err(|e| ServerFnError::ServerError(e.to_string()))
-        }
-
-        pub fn register_server_functions() {
-            _ = GetTodos::register();
-            _ = AddTodo::register();
-            _ = DeleteTodo::register();
+            Ok(SqliteConnection::connect("sqlite:Todos.db").await?)
         }
 
         #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, sqlx::FromRow)]
@@ -49,11 +43,7 @@ pub async fn get_todos(cx: Scope) -> Result<Vec<Todo>, ServerFnError> {
     let mut todos = Vec::new();
     let mut rows =
         sqlx::query_as::<_, Todo>("SELECT * FROM todos").fetch(&mut conn);
-    while let Some(row) = rows
-        .try_next()
-        .await
-        .map_err(|e| ServerFnError::ServerError(e.to_string()))?
-    {
+    while let Some(row) = rows.try_next().await? {
         todos.push(row);
     }
 
@@ -82,12 +72,11 @@ pub async fn add_todo(title: String) -> Result<(), ServerFnError> {
 pub async fn delete_todo(id: u16) -> Result<(), ServerFnError> {
     let mut conn = db().await?;
 
-    sqlx::query("DELETE FROM todos WHERE id = $1")
+    Ok(sqlx::query("DELETE FROM todos WHERE id = $1")
         .bind(id)
         .execute(&mut conn)
         .await
-        .map(|_| ())
-        .map_err(|e| ServerFnError::ServerError(e.to_string()))
+        .map(|_| ())?)
 }
 
 #[component]

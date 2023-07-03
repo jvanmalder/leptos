@@ -10,7 +10,7 @@ description = "Router for the Leptos web framework."
 
 [dependencies]
 leptos = { workspace = true }
-cached = { version = "0.43.0", optional = true }
+cached = { version = "0.44.0", optional = true }
 cfg-if = "1"
 common_macros = "0.1"
 gloo-net = { version = "0.2", features = ["http"] }
@@ -60,9 +60,9 @@ default = []
 csr = ["leptos/csr"]
 hydrate = ["leptos/hydrate"]
 ssr = ["leptos/ssr", "dep:cached", "dep:lru", "dep:url", "dep:regex"]
-stable = ["leptos/stable"]
+nightly = ["leptos/nightly"]
 
 [package.metadata.cargo-all-features]
 # No need to test optional dependencies as they are enabled by the ssr feature
-denylist = ["url", "regex", "stable"]
+denylist = ["url", "regex", "nightly"]
 skip_feature_sets = [["csr", "ssr"], ["csr", "hydrate"], ["ssr", "hydrate"]]

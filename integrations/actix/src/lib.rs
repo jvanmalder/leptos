@@ -185,7 +185,7 @@ pub fn handle_server_fns_with_context(
                     .and_then(|value| value.to_str().ok());
 
                 if let Some(server_fn) = server_fn_by_path(path.as_str()) {
-                    let body: &[u8] = &body;
+                    let body_ref: &[u8] = &body;
 
                     let runtime = create_runtime();
                     let (cx, disposer) = raw_scope_and_disposer(runtime);
@@ -198,19 +198,33 @@ pub fn handle_server_fns_with_context(
                     provide_context(cx, req.clone());
                     provide_context(cx, res_options.clone());
 
+                    // we consume the body here (using the web::Bytes extractor), but it is required for things
+                    // like MultipartForm
+                    if req
+                        .headers()
+                        .get("Content-Type")
+                        .and_then(|value| value.to_str().ok())
+                        .map(|value| {
+                            value.starts_with("multipart/form-data; boundary=")
+                        })
+                        == Some(true)
+                    {
+                        provide_context(cx, body.clone());
+                    }
+
                     let query = req.query_string().as_bytes();
 
-                    let data = match &server_fn.encoding {
-                        Encoding::Url | Encoding::Cbor => body,
+                    let data = match &server_fn.encoding() {
+                        Encoding::Url | Encoding::Cbor => body_ref,
                         Encoding::GetJSON | Encoding::GetCBOR => query,
                     };
-                    let res = match (server_fn.trait_obj)(cx, data).await {
+                    let res = match server_fn.call(cx, data).await {
                         Ok(serialized) => {
                             let res_options =
                                 use_context::<ResponseOptions>(cx).unwrap();
 
                             let mut res: HttpResponseBuilder;
-                            let mut res_parts = res_options.0.write();
+                            let res_parts = res_options.0.write();
 
                             if accept_header == Some("application/json")
                                 || accept_header
@@ -238,11 +252,10 @@ pub fn handle_server_fns_with_context(
                             // Use provided ResponseParts headers if they exist
                             let _count = res_parts
                                 .headers
-                                .drain()
+                                .clone()
+                                .into_iter()
                                 .map(|(k, v)| {
-                                    if let Some(k) = k {
-                                        res.append_header((k, v));
-                                    }
+                                    res.append_header((k, v));
                                 })
                                 .count();
 
@@ -276,8 +289,8 @@ pub fn handle_server_fns_with_context(
                     HttpResponse::BadRequest().body(format!(
                         "Could not find a server function at the route {:?}. \
                          \n\nIt's likely that you need to call \
-                         ServerFn::register() on the server function type, \
-                         somewhere in your `main` function.",
+                         ServerFn::register_explicit() on the server function \
+                         type, somewhere in your `main` function.",
                         req.path()
                     ))
                 }
@@ -770,12 +783,20 @@ async fn build_stream_response(
     scope: ScopeId,
 ) -> HttpResponse {
     let cx = leptos::Scope { runtime, id: scope };
+    let mut stream = Box::pin(stream);
+
+    // wait for any blocking resources to load before pulling metadata
+    let first_app_chunk = stream.next().await.unwrap_or_default();
+
     let (head, tail) =
         html_parts_separated(options, use_context::<MetaContext>(cx).as_ref());
 
     let mut stream = Box::pin(
         futures::stream::once(async move { head.clone() })
-            .chain(stream)
+            .chain(
+                futures::stream::once(async move { first_app_chunk })
+                    .chain(stream),
+            )
             .chain(futures::stream::once(async move {
                 runtime.dispose();
                 tail.to_string()
@@ -789,8 +810,7 @@ async fn build_stream_response(
 
     let res_options = res_options.0.read();
 
-    let (status, mut headers) =
-        (res_options.status, res_options.headers.clone());
+    let (status, headers) = (res_options.status, res_options.headers.clone());
     let status = status.unwrap_or_default();
 
     let complete_stream =
@@ -799,12 +819,12 @@ async fn build_stream_response(
     let mut res = HttpResponse::Ok()
         .content_type("text/html")
         .streaming(complete_stream);
+
     // Add headers manipulated in the response
-    for (key, value) in headers.drain() {
-        if let Some(key) = key {
-            res.headers_mut().append(key, value);
-        }
+    for (key, value) in headers.into_iter() {
+        res.headers_mut().append(key, value);
     }
+
     // Set status to what is returned in the function
     let res_status = res.status_mut();
     *res_status = status;
@@ -829,18 +849,16 @@ async fn render_app_async_helper(
 
     let res_options = res_options.0.read();
 
-    let (status, mut headers) =
-        (res_options.status, res_options.headers.clone());
+    let (status, headers) = (res_options.status, res_options.headers.clone());
     let status = status.unwrap_or_default();
 
     let mut res = HttpResponse::Ok().content_type("text/html").body(html);
 
     // Add headers manipulated in the response
-    for (key, value) in headers.drain() {
-        if let Some(key) = key {
-            res.headers_mut().append(key, value);
-        }
+    for (key, value) in headers.into_iter() {
+        res.headers_mut().append(key, value);
     }
+
     // Set status to what is returned in the function
     let res_status = res.status_mut();
     *res_status = status;
@@ -873,6 +891,12 @@ where
 {
     let mut routes = leptos_router::generate_route_list_inner(app_fn);
 
+    // Actix's Router doesn't follow Leptos's
+    // Match `*` or `*someword` to replace with replace it with "/{tail.*}
+    let wildcard_re = Regex::new(r"\*.*").unwrap();
+    // Match `:some_word` but only capture `some_word` in the groups to replace with `{some_word}`
+    let capture_re = Regex::new(r":((?:[^.,/]+)+)[^/]?").unwrap();
+
     // Empty strings screw with Actix pathing, they need to be "/"
     routes = routes
         .into_iter()
@@ -887,16 +911,6 @@ where
             }
             RouteListing::new(listing.path(), listing.mode(), listing.methods())
         })
-        .collect();
-
-    // Actix's Router doesn't follow Leptos's
-    // Match `*` or `*someword` to replace with replace it with "/{tail.*}
-    let wildcard_re = Regex::new(r"\*.*").unwrap();
-    // Match `:some_word` but only capture `some_word` in the groups to replace with `{some_word}`
-    let capture_re = Regex::new(r":((?:[^.,/]+)+)[^/]?").unwrap();
-
-    let mut routes = routes
-        .into_iter()
         .map(|listing| {
             let path = wildcard_re
                 .replace_all(listing.path(), "{tail:.*}")
@@ -1028,9 +1042,9 @@ where
     }
 }
 
-/// A helper to make it easier to use Axum extractors in server functions. This takes
+/// A helper to make it easier to use Actix extractors in server functions. This takes
 /// a handler function as its argument. The handler follows similar rules to an Actix
-/// [Handler](actix_web::Handler): it is an async function that receives arguments that  
+/// [Handler](actix_web::Handler): it is an async function that receives arguments that
 /// will be extracted from the request and returns some value.
 ///
 /// ```rust,ignore
@@ -1072,9 +1086,17 @@ where
 {
     let req = use_context::<actix_web::HttpRequest>(cx)
         .expect("HttpRequest should have been provided via context");
-    let input = E::extract(&req)
-        .await
-        .map_err(|e| ServerFnError::ServerError(e.to_string()))?;
+
+    let input = if let Some(body) = use_context::<Bytes>(cx) {
+        let (_, mut payload) = actix_http::h1::Payload::create(false);
+        payload.unread_data(body);
+        E::from_request(&req, &mut dev::Payload::from(payload))
+    } else {
+        E::extract(&req)
+    }
+    .await
+    .map_err(|e| ServerFnError::ServerError(e.to_string()))?;
+
     Ok(f.call(input).await)
 }
 
@@ -1083,19 +1105,19 @@ where
 pub trait Extractor<T> {
     type Future;
 
-    fn call(&self, args: T) -> Self::Future;
+    fn call(self, args: T) -> Self::Future;
 }
 macro_rules! factory_tuple ({ $($param:ident)* } => {
     impl<Func, Fut, $($param,)*> Extractor<($($param,)*)> for Func
     where
-        Func: Fn($($param),*) -> Fut + Clone + 'static,
+        Func: FnOnce($($param),*) -> Fut + Clone + 'static,
         Fut: Future,
     {
         type Future = Fut;
 
         #[inline]
         #[allow(non_snake_case)]
-        fn call(&self, ($($param,)*): ($($param,)*)) -> Self::Future {
+        fn call(self, ($($param,)*): ($($param,)*)) -> Self::Future {
             (self)($($param,)*)
         }
     }

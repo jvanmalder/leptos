@@ -449,7 +449,7 @@ impl<El: ElementDescriptor + 'static> HtmlElement<El> {
               element: AnyElement {
                 name: element.name(),
                 is_void: element.is_void(),
-                id: element.hydration_id().clone()
+                id: *element.hydration_id()
               },
               #[cfg(debug_assertions)]
               view_marker
@@ -807,7 +807,7 @@ impl<El: ElementDescriptor + 'static> HtmlElement<El> {
     /// Sets a style on an element.
     ///
     /// **Note**: In the builder syntax, this will be overwritten by the `style`
-    /// attribute if you use `.attr("class", /* */)`. In the `view` macro, they
+    /// attribute if you use `.attr("style", /* */)`. In the `view` macro, they
     /// are automatically re-ordered so that this over-writing does not happen.
     #[track_caller]
     pub fn style(
@@ -1072,7 +1072,7 @@ impl<El: ElementDescriptor> IntoView for HtmlElement<El> {
                 ..
             } = self;
 
-            let id = element.hydration_id().clone();
+            let id = *element.hydration_id();
 
             let mut element = Element::new(element);
             let children = children;
@@ -1116,7 +1116,7 @@ pub fn custom<El: ElementDescriptor>(cx: Scope, el: El) -> HtmlElement<Custom> {
             #[cfg(all(target_arch = "wasm32", feature = "web"))]
             element: el.as_ref().clone(),
             #[cfg(not(all(target_arch = "wasm32", feature = "web")))]
-            id: el.hydration_id().clone(),
+            id: *el.hydration_id(),
         },
     )
 }

@@ -94,15 +94,9 @@ pub fn render_to_stream_in_order_with_prefix_undisposed_with_context(
     let runtime = create_runtime();
 
     let (
-        (
-            blocking_fragments_ready,
-            chunks,
-            prefix,
-            pending_resources,
-            serializers,
-        ),
+        (blocking_fragments_ready, chunks, prefix, pending_resources),
         scope_id,
-        disposer,
+        _,
     ) = run_scope_undisposed(runtime, |cx| {
         // add additional context
         additional_context(cx);
@@ -115,7 +109,6 @@ pub fn render_to_stream_in_order_with_prefix_undisposed_with_context(
             view.into_stream_chunks(cx),
             prefix,
             serde_json::to_string(&cx.pending_resources()).unwrap(),
-            cx.serialization_resolvers(),
         )
     });
     let cx = Scope {
@@ -130,7 +123,7 @@ pub fn render_to_stream_in_order_with_prefix_undisposed_with_context(
         let remaining_chunks = handle_blocking_chunks(tx.clone(), chunks).await;
         let prefix = prefix(cx);
         prefix_tx.send(prefix).expect("to send prefix");
-        handle_chunks(tx, remaining_chunks).await;
+        handle_chunks(cx, tx, remaining_chunks).await;
     });
 
     let stream = futures::stream::once(async move {
@@ -147,12 +140,13 @@ pub fn render_to_stream_in_order_with_prefix_undisposed_with_context(
         )
     })
     .chain(rx)
-    .chain(render_serializers(serializers))
-    // dispose of the scope
-    .chain(futures::stream::once(async move {
-        disposer.dispose();
-        Default::default()
-    }));
+    .chain(
+        futures::stream::once(async move {
+            let serializers = cx.serialization_resolvers();
+            render_serializers(serializers)
+        })
+        .flatten(),
+    );
 
     (stream, runtime, scope_id)
 }
@@ -201,6 +195,7 @@ async fn handle_blocking_chunks(
 #[tracing::instrument(level = "trace", skip_all)]
 #[async_recursion(?Send)]
 async fn handle_chunks(
+    cx: Scope,
     tx: UnboundedSender<String>,
     chunks: VecDeque<StreamChunk>,
 ) {
@@ -215,7 +210,7 @@ async fn handle_chunks(
 
                 // send the inner stream
                 let suspended = chunks.await;
-                handle_chunks(tx.clone(), suspended).await;
+                handle_chunks(cx, tx.clone(), suspended).await;
             }
         }
     }
@@ -240,13 +235,20 @@ impl View {
         dont_escape_text: bool,
     ) {
         match self {
-            View::Suspense(id, _) => {
+            View::Suspense(id, view) => {
                 let id = id.to_string();
                 if let Some(data) = cx.take_pending_fragment(&id) {
                     chunks.push_back(StreamChunk::Async {
                         chunks: data.in_order,
                         should_block: data.should_block,
                     });
+                } else {
+                    // if not registered, means it was already resolved
+                    View::CoreComponent(view).into_stream_chunks_helper(
+                        cx,
+                        chunks,
+                        dont_escape_text,
+                    );
                 }
             }
             View::Text(node) => {
@@ -372,7 +374,7 @@ impl View {
             View::CoreComponent(node) => {
                 let (id, name, wrap, content) = match node {
                     CoreComponent::Unit(u) => (
-                        u.id.clone(),
+                        u.id,
                         "",
                         false,
                         Box::new(move |chunks: &mut VecDeque<StreamChunk>| {

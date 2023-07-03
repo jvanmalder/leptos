@@ -1,4 +1,4 @@
-#![cfg_attr(not(feature = "stable"), feature(proc_macro_span))]
+#![cfg_attr(feature = "nightly", feature(proc_macro_span))]
 #![forbid(unsafe_code)]
 
 #[macro_use]
@@ -7,9 +7,9 @@ extern crate proc_macro_error;
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenTree};
 use quote::ToTokens;
+use rstml::{node::KeyedAttribute, parse};
 use server_fn_macro::{server_macro_impl, ServerContext};
 use syn::parse_macro_input;
-use syn_rsx::{parse, NodeAttribute};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Mode {
@@ -94,7 +94,7 @@ mod template;
 ///    Attributes can take a wide variety of primitive types that can be converted to strings. They can also
 ///    take an `Option`, in which case `Some` sets the attribute and `None` removes the attribute.
 ///
-/// ```rust
+/// ```rust,ignore
 /// # use leptos::*;
 /// # run_scope(create_runtime(), |cx| {
 /// # if !cfg!(any(feature = "csr", feature = "hydrate")) {
@@ -102,11 +102,11 @@ mod template;
 ///
 /// view! {
 ///   cx,
-///   // ❌ not like this: `count()` returns an `i32`, not a function
-///   <p>{count()}</p>
+///   // ❌ not like this: `count.get()` returns an `i32`, not a function
+///   <p>{count.get()}</p>
 ///   // ✅ this is good: Leptos sees the function and knows it's a dynamic value
 ///   <p>{move || count.get()}</p>
-///   // 🔥 `count` is itself a function, so you can pass it directly (unless you're on `stable`)
+///   // 🔥 with the `nightly` feature, `count` is a function, so `count` itself can be passed directly into the view
 ///   <p>{count}</p>
 /// }
 /// # ;
@@ -147,9 +147,9 @@ mod template;
 ///   <input
 ///     type="text"
 ///     name="user_name"
-///     value={name} // this only sets the default value!
-///     prop:value={name} // here's how you update values. Sorry, I didn’t invent the DOM.
-///     on:click=move |ev| set_name(event_target_value(&ev)) // `event_target_value` is a useful little Leptos helper
+///     value={move || name.get()} // this only sets the default value!
+///     prop:value={move || name.get()} // here's how you update values. Sorry, I didn’t invent the DOM.
+///     on:click=move |ev| set_name.set(event_target_value(&ev)) // `event_target_value` is a useful little Leptos helper
 ///   />
 /// }
 /// # ;
@@ -163,7 +163,7 @@ mod template;
 /// # run_scope(create_runtime(), |cx| {
 /// # if !cfg!(any(feature = "csr", feature = "hydrate")) {
 /// let (count, set_count) = create_signal(cx, 2);
-/// view! { cx, <div class:hidden-div={move || count() < 3}>"Now you see me, now you don’t."</div> }
+/// view! { cx, <div class:hidden-div={move || count.get() < 3}>"Now you see me, now you don’t."</div> }
 /// # ;
 /// # }
 /// # });
@@ -176,7 +176,7 @@ mod template;
 /// # if !cfg!(any(feature = "csr", feature = "hydrate")) {
 /// let (count, set_count) = create_signal(cx, 2);
 /// // `hidden-div-25` is invalid at the moment
-/// view! { cx, <div class:hidden-div-25={move || count() < 3}>"Now you see me, now you don’t."</div> }
+/// view! { cx, <div class:hidden-div-25={move || count.get() < 3}>"Now you see me, now you don’t."</div> }
 /// # ;
 /// # }
 /// # });
@@ -191,7 +191,7 @@ mod template;
 /// // this allows you to use CSS frameworks that include complex class names
 /// view! { cx,
 ///   <div
-///     class=("is-[this_-_really]-necessary-42", move || count() < 3)
+///     class=("is-[this_-_really]-necessary-42", move || count.get() < 3)
 ///   >
 ///     "Now you see me, now you don’t."
 ///   </div>
@@ -211,9 +211,9 @@ mod template;
 /// view! { cx,
 ///   <div
 ///     style="position: absolute"
-///     style:left=move || format!("{}px", x())
-///     style:top=move || format!("{}px", y())
-///     style=("background-color", move || format!("rgb({}, {}, 100)", x(), y()))
+///     style:left=move || format!("{}px", x.get())
+///     style:top=move || format!("{}px", y.get())
+///     style=("background-color", move || format!("rgb({}, {}, 100)", x.get(), y.get()))
 ///   >
 ///     "Moves when coordinates change"
 ///   </div>
@@ -285,7 +285,7 @@ mod template;
 ///
 ///     // create event handlers for our buttons
 ///     // note that `value` and `set_value` are `Copy`, so it's super easy to move them into closures
-///     let clear = move |_ev| set_value(0);
+///     let clear = move |_ev| set_value.set(0);
 ///     let decrement = move |_ev| set_value.update(|value| *value -= 1);
 ///     let increment = move |_ev| set_value.update(|value| *value += 1);
 ///
@@ -295,7 +295,7 @@ mod template;
 ///         <div>
 ///             <button on:click=clear>"Clear"</button>
 ///             <button on:click=decrement>"-1"</button>
-///             <span>"Value: " {move || value().to_string()} "!"</span>
+///             <span>"Value: " {move || value.get().to_string()} "!"</span>
 ///             <button on:click=increment>"+1"</button>
 ///         </div>
 ///     }
@@ -351,16 +351,22 @@ pub fn view(tokens: TokenStream) -> TokenStream {
                     .chain(tokens)
                     .collect()
             };
-
-            match parse(tokens.into()) {
-                Ok(nodes) => render_view(
-                    &proc_macro2::Ident::new(&cx.to_string(), cx.span()),
-                    &nodes,
-                    Mode::default(),
-                    global_class.as_ref(),
-                    normalized_call_site(proc_macro::Span::call_site()),
-                ),
-                Err(error) => error.to_compile_error(),
+            let config = rstml::ParserConfig::default().recover_block(true);
+            let parser = rstml::Parser::new(config);
+            let (nodes, errors) = parser.parse_recoverable(tokens).split_vec();
+            let errors = errors.into_iter().map(|e| e.emit_as_expr_tokens());
+            let nodes_output = render_view(
+                &cx,
+                &nodes,
+                Mode::default(),
+                global_class.as_ref(),
+                normalized_call_site(proc_macro::Span::call_site()),
+            );
+            quote! {
+                {
+                    #(#errors;)*
+                    #nodes_output
+                }
             }
             .into()
         }
@@ -375,7 +381,7 @@ pub fn view(tokens: TokenStream) -> TokenStream {
 
 fn normalized_call_site(site: proc_macro::Span) -> Option<String> {
     cfg_if::cfg_if! {
-        if #[cfg(all(debug_assertions, not(feature = "stable")))] {
+        if #[cfg(all(debug_assertions, feature = "nightly"))] {
             Some(leptos_hot_reload::span_to_stable_id(
                 site.source_file().path(),
                 site.into()
@@ -461,7 +467,7 @@ pub fn template(tokens: TokenStream) -> TokenStream {
 ///     // return the user interface, which will be automatically updated
 ///     // when signal values change
 ///     view! { cx,
-///       <p>"Your name is " {name} " and you are " {age} " years old."</p>
+///       <p>"Your name is " {name} " and you are " {move || age.get()} " years old."</p>
 ///     }
 /// }
 ///
@@ -496,15 +502,11 @@ pub fn template(tokens: TokenStream) -> TokenStream {
 ///
 /// // PascalCase: Generated component will be called MyComponent
 /// #[component]
-/// fn MyComponent(cx: Scope) -> impl IntoView {
-///     todo!()
-/// }
+/// fn MyComponent(cx: Scope) -> impl IntoView {}
 ///
 /// // snake_case: Generated component will be called MySnakeCaseComponent
 /// #[component]
-/// fn my_snake_case_component(cx: Scope) -> impl IntoView {
-///     todo!()
-/// }
+/// fn my_snake_case_component(cx: Scope) -> impl IntoView {}
 /// ```
 ///
 /// 3. The macro generates a type `ComponentProps` for every `Component` (so, `HomePage` generates `HomePageProps`,
@@ -520,9 +522,7 @@ pub fn template(tokens: TokenStream) -> TokenStream {
 ///     use leptos::*;
 ///
 ///     #[component]
-///     pub fn MyComponent(cx: Scope) -> impl IntoView {
-///         todo!()
-///     }
+///     pub fn MyComponent(cx: Scope) -> impl IntoView {}
 /// }
 /// ```
 /// ```
@@ -536,9 +536,7 @@ pub fn template(tokens: TokenStream) -> TokenStream {
 ///     use leptos::*;
 ///
 ///     #[component]
-///     pub fn my_snake_case_component(cx: Scope) -> impl IntoView {
-///         todo!()
-///     }
+///     pub fn my_snake_case_component(cx: Scope) -> impl IntoView {}
 /// }
 /// ```
 ///
@@ -551,7 +549,6 @@ pub fn template(tokens: TokenStream) -> TokenStream {
 ///
 /// #[component]
 /// fn MyComponent<T: Fn() -> HtmlElement<Div>>(cx: Scope, render_prop: T) -> impl IntoView {
-///   todo!()
 /// }
 /// ```
 ///
@@ -565,7 +562,6 @@ pub fn template(tokens: TokenStream) -> TokenStream {
 /// where
 ///     T: Fn() -> HtmlElement<Div>,
 /// {
-///     todo!()
 /// }
 /// ```
 ///
@@ -672,7 +668,7 @@ pub fn component(args: proc_macro::TokenStream, s: TokenStream) -> TokenStream {
 /// Annotates a struct so that it can be used with your Component as a `slot`.
 ///
 /// The `#[slot]` macro allows you to annotate plain Rust struct as component slots and use them
-/// within your Leptos [component](crate::component!) properties. The struct can contain any number
+/// within your Leptos [`component`](macro@crate::component) properties. The struct can contain any number
 /// of fields. When you use the component somewhere else, the names of the slot fields are the
 /// names of the properties you use in the [view](crate::view!) macro.
 ///
@@ -844,6 +840,50 @@ pub fn slot(args: proc_macro::TokenStream, s: TokenStream) -> TokenStream {
 /// - **The `Scope` comes from the server.** Optionally, the first argument of a server function
 ///   can be a Leptos `Scope`. This scope can be used to inject dependencies like the HTTP request
 ///   or response or other server-only dependencies, but it does *not* have access to reactive state that exists in the client.
+///
+/// ## Server Function Encodings
+///
+/// By default, the server function call is a `POST` request that serializes the arguments as URL-encoded form data in the body
+/// of the request. But there are a few other methods supported. Optionally, we can provide another argument to the `#[server]`
+/// macro to specify an alternate encoding:
+///
+/// ```rust,ignore
+/// #[server(AddTodo, "/api", "Url")]
+/// #[server(AddTodo, "/api", "GetJson")]
+/// #[server(AddTodo, "/api", "Cbor")]
+/// #[server(AddTodo, "/api", "GetCbor")]
+/// ```
+///
+/// The four options use different combinations of HTTP verbs and encoding methods:
+///
+/// | Name              | Method | Request     | Response |
+/// | ----------------- | ------ | ----------- | -------- |
+/// | **Url** (default) | POST   | URL encoded | JSON     |
+/// | **GetJson**       | GET    | URL encoded | JSON     |
+/// | **Cbor**          | POST   | CBOR        | CBOR     |
+/// | **GetCbor**       | GET    | URL encoded | CBOR     |
+///
+/// In other words, you have two choices:
+///
+/// - `GET` or `POST`? This has implications for things like browser or CDN caching; while `POST` requests should not be cached,
+/// `GET` requests can be.
+/// - Plain text (arguments sent with URL/form encoding, results sent as JSON) or a binary format (CBOR, encoded as a base64
+/// string)?
+///
+/// ## Why not `PUT` or `DELETE`? Why URL/form encoding, and not JSON?**
+///
+/// These are reasonable questions. Much of the web is built on REST API patterns that encourage the use of semantic HTTP
+/// methods like `DELETE` to delete an item from a database, and many devs are accustomed to sending data to APIs in the
+/// JSON format.
+///
+/// The reason we use `POST` or `GET` with URL-encoded data by default is the `<form>` support. For better or for worse,
+/// HTML forms don’t support `PUT` or `DELETE`, and they don’t support sending JSON. This means that if you use anything
+/// but a `GET` or `POST` request with URL-encoded data, it can only work once WASM has loaded.
+///
+/// The CBOR encoding is suported for historical reasons; an earlier version of server functions used a URL encoding that
+/// didn’t support nested objects like structs or vectors as server function arguments, which CBOR did. But note that the
+/// CBOR forms encounter the same issue as `PUT`, `DELETE`, or JSON: they do not degrade gracefully if the WASM version of
+/// your app is not available.
 #[proc_macro_attribute]
 #[proc_macro_error]
 pub fn server(args: proc_macro::TokenStream, s: TokenStream) -> TokenStream {
@@ -854,6 +894,7 @@ pub fn server(args: proc_macro::TokenStream, s: TokenStream) -> TokenStream {
     match server_macro_impl(
         args.into(),
         s.into(),
+        syn::parse_quote!(::leptos::leptos_server::ServerFnTraitObj),
         Some(context),
         Some(syn::parse_quote!(::leptos::server_fn)),
     ) {
@@ -874,9 +915,9 @@ pub fn params_derive(
     }
 }
 
-pub(crate) fn attribute_value(attr: &NodeAttribute) -> &syn::Expr {
-    match &attr.value {
-        Some(value) => value.as_ref(),
+pub(crate) fn attribute_value(attr: &KeyedAttribute) -> &syn::Expr {
+    match &attr.possible_value {
+        Some(value) => &value.value,
         None => abort!(attr.key, "attribute should have value"),
     }
 }
