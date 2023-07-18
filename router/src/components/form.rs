@@ -143,10 +143,7 @@ where
                                     match Url::try_from(resp_url.as_str()) {
                                         Ok(url) => {
                                             if url.origin
-                                                != window()
-                                                    .location()
-                                                    .origin()
-                                                    .unwrap_or_default()
+                                                != current_window_origin()
                                             {
                                                 _ = window()
                                                     .location()
@@ -227,10 +224,7 @@ where
                                     match Url::try_from(resp_url.as_str()) {
                                         Ok(url) => {
                                             if url.origin
-                                                != window()
-                                                    .location()
-                                                    .hostname()
-                                                    .unwrap_or_default()
+                                                != current_window_origin()
                                             {
                                                 _ = window()
                                                     .location()
@@ -328,14 +322,27 @@ where
     )
 }
 
+fn current_window_origin() -> String {
+    let location = window().location();
+    let protocol = location.protocol().unwrap_or_default();
+    let hostname = location.hostname().unwrap_or_default();
+    let port = location.port().unwrap_or_default();
+    format!(
+        "{}//{}{}{}",
+        protocol,
+        hostname,
+        if port.is_empty() { "" } else { ":" },
+        port
+    )
+}
+
 /// Automatically turns a server [Action](leptos_server::Action) into an HTML
 /// [`form`](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/form)
 /// progressively enhanced to use client-side routing.
 ///
 /// ## Encoding
 /// **Note:** `<ActionForm/>` only works with server functions that use the
-/// default `Url` encoding or the `GetJSON` encoding, not with `CBOR` or other
-/// encoding schemes. This is to ensure that `<ActionForm/>` works correctly
+/// default `Url` encoding. This is to ensure that `<ActionForm/>` works correctly
 /// both before and after WASM has loaded.
 #[cfg_attr(
     any(debug_assertions, feature = "ssr"),
@@ -417,70 +424,67 @@ where
     let on_response = Rc::new(move |resp: &web_sys::Response| {
         let resp = resp.clone().expect("couldn't get Response");
         spawn_local(async move {
-            let redirected = resp.redirected();
-            if !redirected {
-                let body = JsFuture::from(
-                    resp.text().expect("couldn't get .text() from Response"),
-                )
-                .await;
-                let status = resp.status();
-                match body {
-                    Ok(json) => {
-                        let json = json
-                            .as_string()
-                            .expect("couldn't get String from JsString");
-                        if (500..=599).contains(&status) {
-                            match serde_json::from_str::<ServerFnError>(&json) {
-                                Ok(res) => {
-                                    value.try_set(Some(Err(res)));
-                                    if let Some(error) = error {
-                                        error.try_set(None);
-                                    }
-                                }
-                                Err(e) => {
-                                    value.try_set(Some(Err(
-                                        ServerFnError::Deserialization(
-                                            e.to_string(),
-                                        ),
-                                    )));
-                                    if let Some(error) = error {
-                                        error.try_set(Some(Box::new(e)));
-                                    }
+            let body = JsFuture::from(
+                resp.text().expect("couldn't get .text() from Response"),
+            )
+            .await;
+            let status = resp.status();
+            match body {
+                Ok(json) => {
+                    let json = json
+                        .as_string()
+                        .expect("couldn't get String from JsString");
+                    if (500..=599).contains(&status) {
+                        match serde_json::from_str::<ServerFnError>(&json) {
+                            Ok(res) => {
+                                value.try_set(Some(Err(res)));
+                                if let Some(error) = error {
+                                    error.try_set(None);
                                 }
                             }
-                        } else {
-                            match serde_json::from_str::<O>(&json) {
-                                Ok(res) => {
-                                    value.try_set(Some(Ok(res)));
-                                    if let Some(error) = error {
-                                        error.try_set(None);
-                                    }
+                            Err(e) => {
+                                value.try_set(Some(Err(
+                                    ServerFnError::Deserialization(
+                                        e.to_string(),
+                                    ),
+                                )));
+                                if let Some(error) = error {
+                                    error.try_set(Some(Box::new(e)));
                                 }
-                                Err(e) => {
-                                    value.try_set(Some(Err(
-                                        ServerFnError::Deserialization(
-                                            e.to_string(),
-                                        ),
-                                    )));
-                                    if let Some(error) = error {
-                                        error.try_set(Some(Box::new(e)));
-                                    }
+                            }
+                        }
+                    } else {
+                        match serde_json::from_str::<O>(&json) {
+                            Ok(res) => {
+                                value.try_set(Some(Ok(res)));
+                                if let Some(error) = error {
+                                    error.try_set(None);
+                                }
+                            }
+                            Err(e) => {
+                                value.try_set(Some(Err(
+                                    ServerFnError::Deserialization(
+                                        e.to_string(),
+                                    ),
+                                )));
+                                if let Some(error) = error {
+                                    error.try_set(Some(Box::new(e)));
                                 }
                             }
                         }
                     }
-                    Err(e) => {
-                        error!("{e:?}");
-                        if let Some(error) = error {
-                            error.try_set(Some(Box::new(
-                                ServerFnErrorErr::Request(
-                                    e.as_string().unwrap_or_default(),
-                                ),
-                            )));
-                        }
+                }
+                Err(e) => {
+                    error!("{e:?}");
+                    if let Some(error) = error {
+                        error.try_set(Some(Box::new(
+                            ServerFnErrorErr::Request(
+                                e.as_string().unwrap_or_default(),
+                            ),
+                        )));
                     }
-                };
-            }
+                }
+            };
             cx.batch(move || {
                 input.try_set(None);
                 action.set_pending(false);
@@ -488,6 +492,19 @@ where
         });
     });
     let class = class.map(|bx| bx.into_attribute_boxed(cx));
+
+    #[cfg(debug_assertions)]
+    {
+        if I::encoding() != server_fn::Encoding::Url {
+            leptos::warn!(
+                "<ActionForm/> only supports the `Url` encoding for server \
+                 functions, but {} uses {:?}.",
+                std::any::type_name::<I>(),
+                I::encoding()
+            );
+        }
+    }
+
     let mut props = FormProps::builder()
         .action(action_url)
         .version(version)

@@ -335,9 +335,14 @@ async fn handle_server_fns_inner(
                 Response::builder().status(StatusCode::BAD_REQUEST).body(
                     Full::from(format!(
                         "Could not find a server function at the route \
-                         {fn_name}. \n\nIt's likely that you need to call \
+                         {fn_name}. \n\nIt's likely that either 
+                         1. The API prefix you specify in the `#[server]` \
+                         macro doesn't match the prefix at which your server \
+                         function handler is mounted, or \n2. You are on a \
+                         platform that doesn't support automatic server \
+                         function registration and you need to call \
                          ServerFn::register_explicit() on the server function \
-                         type, somewhere in your `main` function."
+                         type, somewhere in your `main` function.",
                     )),
                 )
             }
@@ -600,7 +605,6 @@ where
             let res_options3 = default_res_options.clone();
             let local_pool = get_leptos_pool();
             let (tx, rx) = futures::channel::mpsc::channel(8);
-            let (runtime_tx, runtime_rx) = futures::channel::oneshot::channel();
 
             let current_span = tracing::Span::current();
             local_pool.spawn_pinned(move || async move {
@@ -625,17 +629,12 @@ where
                         replace_blocks
                     );
 
-                    runtime_tx.send(runtime).expect("should be able to send runtime");
-
                     forward_stream(&options, res_options2, bundle, runtime, scope, tx).await;
+
+                    runtime.dispose();
             }.instrument(current_span));
 
-            async move {
-                let runtime = runtime_rx
-                    .await
-                    .expect("runtime should be sent by renderer");
-                generate_response(res_options3, rx, runtime).await
-            }
+            generate_response(res_options3, rx)
         })
     }
 }
@@ -644,7 +643,6 @@ where
 async fn generate_response(
     res_options: ResponseOptions,
     rx: Receiver<String>,
-    runtime: RuntimeId,
 ) -> Response<StreamBody<PinnedHtmlStream>> {
     let mut stream = Box::pin(rx.map(|html| Ok(Bytes::from(html))));
 
@@ -657,11 +655,7 @@ async fn generate_response(
 
     let complete_stream =
         futures::stream::iter([first_chunk.unwrap(), second_chunk.unwrap()])
-            .chain(stream)
-            .chain(futures::stream::once(async move {
-                runtime.dispose();
-                Ok(Default::default())
-            }));
+            .chain(stream);
 
     let mut res = Response::new(StreamBody::new(
         Box::pin(complete_stream) as PinnedHtmlStream
@@ -688,8 +682,11 @@ async fn forward_stream(
     let mut shell = Box::pin(bundle);
     let first_app_chunk = shell.next().await.unwrap_or_default();
 
-    let (head, tail) =
-        html_parts_separated(options, use_context::<MetaContext>(cx).as_ref());
+    let (head, tail) = html_parts_separated(
+        cx,
+        options,
+        use_context::<MetaContext>(cx).as_ref(),
+    );
 
     _ = tx.send(head).await;
     _ = tx.send(first_app_chunk).await;
@@ -773,8 +770,6 @@ where
                 let full_path = format!("http://leptos.dev{path}");
 
                 let (tx, rx) = futures::channel::mpsc::channel(8);
-                let (runtime_tx, runtime_rx) =
-                    futures::channel::oneshot::channel();
                 let local_pool = get_leptos_pool();
                 let current_span = tracing::Span::current();
                 local_pool.spawn_pinned(|| async move {
@@ -794,15 +789,12 @@ where
                             add_context,
                         );
 
-                    runtime_tx.send(runtime).expect("should be able to send runtime");
-
                     forward_stream(&options, res_options2, bundle, runtime, scope, tx).await;
+
+                    runtime.dispose();
                 }.instrument(current_span));
 
-                let runtime = runtime_rx
-                    .await
-                    .expect("runtime should be sent by renderer");
-                generate_response(res_options3, rx, runtime).await
+                generate_response(res_options3, rx).await
             }
         })
     }
@@ -823,6 +815,8 @@ fn provide_contexts(
     provide_context(cx, extractor);
     provide_context(cx, default_res_options);
     provide_server_redirect(cx, move |path| redirect(cx, path));
+    #[cfg(feature = "nonce")]
+    leptos::nonce::provide_nonce(cx);
 }
 
 /// Returns an Axum [Handler](axum::handler::Handler) that listens for a `GET` request and tries
@@ -1276,18 +1270,24 @@ impl ExtractorHelper {
         }
     }
 
-    pub async fn extract<F, T, U>(&self, f: F) -> Result<U, T::Rejection>
+    pub async fn extract<F, T, U, S>(
+        &self,
+        f: F,
+        s: S,
+    ) -> Result<U, T::Rejection>
     where
-        F: Extractor<T, U>,
-        T: std::fmt::Debug + Send + FromRequestParts<()> + 'static,
+        S: Sized,
+        F: Extractor<T, U, S>,
+        T: std::fmt::Debug + Send + FromRequestParts<S> + 'static,
         T::Rejection: std::fmt::Debug + Send + 'static,
     {
         let mut parts = self.parts.lock().await;
-        let data = T::from_request_parts(&mut parts, &()).await?;
+        let data = T::from_request_parts(&mut parts, &s).await?;
         Ok(f.call(data).await)
     }
 }
 
+/// Getting ExtractorHelper from a request will return an ExtractorHelper whose state is ().
 impl<B> From<Request<B>> for ExtractorHelper {
     fn from(req: Request<B>) -> Self {
         // TODO provide body for extractors there, too?
@@ -1315,13 +1315,54 @@ impl<B> From<Request<B>> for ExtractorHelper {
 ///     .map_err(|e| ServerFnError::ServerError("Could not extract method and query...".to_string()))
 /// }
 /// ```
+///
+/// > Note: For now, the Axum `extract` function only supports extractors for
+/// which the state is `()`, i.e., you can't yet use it to extract `State(_)`.
+/// You can access `State(_)` by using a custom handler that extracts the state
+/// and then provides it via context.
+/// [Click here for an example](https://github.com/leptos-rs/leptos/blob/a5f73b441c079f9138102b3a7d8d4828f045448c/examples/session_auth_axum/src/main.rs#L91-L92).
 #[tracing::instrument(level = "trace", fields(error), skip_all)]
 pub async fn extract<T, U>(
     cx: Scope,
-    f: impl Extractor<T, U>,
+    f: impl Extractor<T, U, ()>,
 ) -> Result<U, T::Rejection>
 where
     T: std::fmt::Debug + Send + FromRequestParts<()> + 'static,
+    T::Rejection: std::fmt::Debug + Send + 'static,
+{
+    extract_with_state(cx, (), f).await
+}
+
+/// A helper to make it easier to use Axum extractors in server functions. This takes
+/// a handler function and state as its arguments. The handler rules similar to Axum
+/// [handlers](https://docs.rs/axum/latest/axum/extract/index.html#intro): it is an async function
+/// whose arguments are “extractors.”
+///
+/// ```rust,ignore
+/// #[server(QueryExtract, "/api")]
+/// pub async fn query_extract(cx: Scope) -> Result<String, ServerFnError> {
+///     use axum::{extract::Query, http::Method};
+///     use leptos_axum::extract;
+///     let state: ServerState = use_context::<crate::ServerState>(cx)
+///          .ok_or(ServerFnError::ServerError("No server state".to_string()))?;
+///
+///     extract_with_state(cx, state, |method: Method, res: Query<MyQuery>| async move {
+///             format!("{method:?} and {}", res.q)
+///         },
+///     )
+///     .await
+///     .map_err(|e| ServerFnError::ServerError("Could not extract method and query...".to_string()))
+/// }
+/// ```
+#[tracing::instrument(level = "trace", fields(error), skip_all)]
+pub async fn extract_with_state<T, U, S>(
+    cx: Scope,
+    state: S,
+    f: impl Extractor<T, U, S>,
+) -> Result<U, T::Rejection>
+where
+    S: Sized,
+    T: std::fmt::Debug + Send + FromRequestParts<S> + 'static,
     T::Rejection: std::fmt::Debug + Send + 'static,
 {
     use_context::<ExtractorHelper>(cx)
@@ -1329,23 +1370,25 @@ where
             "should have had ExtractorHelper provided by the leptos_axum \
              integration",
         )
-        .extract(f)
+        .extract(f, state)
         .await
 }
 
-pub trait Extractor<T, U>
+pub trait Extractor<T, U, S>
 where
-    T: FromRequestParts<()>,
+    S: Sized,
+    T: FromRequestParts<S>,
 {
     fn call(self, args: T) -> Pin<Box<dyn Future<Output = U>>>;
 }
 
 macro_rules! factory_tuple ({ $($param:ident)* } => {
-    impl<Func, Fut, U, $($param,)*> Extractor<($($param,)*), U> for Func
+    impl<Func, Fut, U, S, $($param,)*> Extractor<($($param,)*), U, S> for Func
     where
-        $($param: FromRequestParts<()> + Send,)*
+        $($param: FromRequestParts<S> + Send,)*
         Func: FnOnce($($param),*) -> Fut + 'static,
         Fut: Future<Output = U> + 'static,
+        S: Sized + Send + Sync,
     {
         #[inline]
         #[allow(non_snake_case)]

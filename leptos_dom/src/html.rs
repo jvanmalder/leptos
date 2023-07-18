@@ -204,11 +204,9 @@ impl Custom {
                 assert_eq!(
                     el.node_name().to_ascii_uppercase(),
                     name.to_ascii_uppercase(),
-                    "SSR and CSR elements have the same `TopoId` but \
-                     different node kinds. This is either a discrepancy \
-                     between SSR and CSR rendering
-                    logic, which is considered a bug, or it can also be a \
-                     leptos hydration issue."
+                    "SSR and CSR elements have the same hydration key but \
+                     different node kinds. Check out the docs for information \
+                     about this kind of hydration bug: https://leptos-rs.github.io/leptos/ssr/24_hydration_bugs.html"
                 );
 
                 el.remove_attribute("id").unwrap();
@@ -221,11 +219,9 @@ impl Custom {
                 assert_eq!(
                     el.node_name().to_ascii_uppercase(),
                     name.to_ascii_uppercase(),
-                    "SSR and CSR elements have the same `TopoId` but \
-                     different node kinds. This is either a discrepancy \
-                     between SSR and CSR rendering
-                    logic, which is considered a bug, or it can also be a \
-                     leptos hydration issue."
+                    "SSR and CSR elements have the same hydration key but \
+                     different node kinds. Check out the docs for information \
+                     about this kind of hydration bug: https://leptos-rs.github.io/leptos/ssr/24_hydration_bugs.html"
                 );
 
                 el.remove_attribute("leptos-hk").unwrap();
@@ -733,22 +729,24 @@ impl<El: ElementDescriptor + 'static> HtmlElement<El> {
                         .collect::<SmallVec<[Cow<'static, str>; 4]>>(
                     );
 
-                    let mut new_classes = classes
+                    let new_classes = classes
                         .iter()
                         .flat_map(|classes| classes.split_whitespace());
 
                     if let Some(prev_classes) = prev_classes {
+                        let new_classes =
+                            new_classes.collect::<SmallVec<[_; 4]>>();
                         let mut old_classes = prev_classes
                             .iter()
                             .flat_map(|classes| classes.split_whitespace());
 
                         // Remove old classes
                         for prev_class in old_classes.clone() {
-                            if !new_classes.any(|c| c == prev_class) {
+                            if !new_classes.iter().any(|c| c == &prev_class) {
                                 class_list.remove_1(prev_class).unwrap_or_else(
                                     |err| {
                                         panic!(
-                                            "failed to add class \
+                                            "failed to remove class \
                                              `{prev_class}`, error: {err:#?}"
                                         )
                                     },
@@ -761,7 +759,7 @@ impl<El: ElementDescriptor + 'static> HtmlElement<El> {
                             if !old_classes.any(|c| c == class) {
                                 class_list.add_1(class).unwrap_or_else(|err| {
                                     panic!(
-                                        "failed to remove class `{class}`, \
+                                        "failed to add class `{class}`, \
                                          error: {err:#?}"
                                     )
                                 });
@@ -1268,11 +1266,9 @@ fn create_leptos_element(
             assert_eq!(
                 &el.node_name().to_ascii_uppercase(),
                 tag,
-                "SSR and CSR elements have the same `TopoId` but different \
-                 node kinds. This is either a discrepancy between SSR and CSR \
-                 rendering
-            logic, which is considered a bug, or it can also be a leptos \
-                 hydration issue."
+                "SSR and CSR elements have the same hydration key but \
+                different node kinds. Check out the docs for information \
+                about this kind of hydration bug: https://leptos-rs.github.io/leptos/ssr/24_hydration_bugs.html"
             );
 
             el.remove_attribute("id").unwrap();
@@ -1285,11 +1281,9 @@ fn create_leptos_element(
             assert_eq!(
                 el.node_name().to_ascii_uppercase(),
                 tag,
-                "SSR and CSR elements have the same `TopoId` but different \
-                 node kinds. This is either a discrepancy between SSR and CSR \
-                 rendering
-            logic, which is considered a bug, or it can also be a leptos \
-                 hydration issue."
+                "SSR and CSR elements have the same hydration key but \
+                different node kinds. Check out the docs for information \
+                about this kind of hydration bug: https://leptos-rs.github.io/leptos/ssr/24_hydration_bugs.html"
             );
 
             el.remove_attribute("leptos-hk").unwrap();

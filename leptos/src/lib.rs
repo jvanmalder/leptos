@@ -84,11 +84,18 @@
 //!   from the server to the client.
 //! - `serde-lite` In SSR/hydrate mode, uses [serde-lite](https://docs.rs/serde-lite/latest/serde_lite/) to serialize resources and send them
 //!   from the server to the client.
+//! - `rkyv` In SSR/hydrate mode, uses [rkyv](https://docs.rs/rkyv/latest/rkyv/) to serialize resources and send them
+//!   from the server to the client.
 //! - `miniserde` In SSR/hydrate mode, uses [miniserde](https://docs.rs/miniserde/latest/miniserde/) to serialize resources and send them
 //!   from the server to the client.
+//! - `tracing` Adds additional support for [`tracing`](https://docs.rs/tracing/latest/tracing/) to components.
+//! - `default-tls` Use default native TLS support. (Only applies when using server functions with a non-WASM client like a desktop app.)
+//! - `rustls` Use `rustls`. (Only applies when using server functions with a non-WASM client like a desktop app.)
+//! - `template_macro` Enables the [`template!`](leptos_macro::template) macro, which offers faster DOM node creation for some use cases in `csr`.
 //!
 //! **Important Note:** You must enable one of `csr`, `hydrate`, or `ssr` to tell Leptos
-//! which mode your app is operating in.
+//! which mode your app is operating in. You should only enable one of these per build target,
+//! i.e., you should not have both `hydrate` and `ssr` enabled for your server binary, only `ssr`.
 //!
 //! # A Simple Counter
 //!
@@ -157,9 +164,10 @@ pub use leptos_dom::{
         set_interval_with_handle, set_timeout, set_timeout_with_handle,
         window_event_listener, window_event_listener_untyped,
     },
-    html, log, math, mount_to, mount_to_body, svg, warn, window, Attribute,
-    Class, CollectView, Errors, Fragment, HtmlElement, IntoAttribute,
-    IntoClass, IntoProperty, IntoStyle, IntoView, NodeRef, Property, View,
+    html, log, math, mount_to, mount_to_body, nonce, svg, warn, window,
+    Attribute, Class, CollectView, Errors, Fragment, HtmlElement,
+    IntoAttribute, IntoClass, IntoProperty, IntoStyle, IntoView, NodeRef,
+    Property, View,
 };
 
 /// Types to make it easier to handle errors in your application.

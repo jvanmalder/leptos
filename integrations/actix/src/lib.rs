@@ -223,26 +223,30 @@ pub fn handle_server_fns_with_context(
                             let res_options =
                                 use_context::<ResponseOptions>(cx).unwrap();
 
-                            let mut res: HttpResponseBuilder;
+                            let mut res: HttpResponseBuilder =
+                                HttpResponse::Ok();
                             let res_parts = res_options.0.write();
 
-                            if accept_header == Some("application/json")
-                                || accept_header
-                                    == Some("application/x-www-form-urlencoded")
-                                || accept_header == Some("application/cbor")
+                            // if accept_header isn't set to one of these, it's a form submit
+                            // redirect back to the referrer if not redirect has been set
+                            if accept_header != Some("application/json")
+                                && accept_header
+                                    != Some("application/x-www-form-urlencoded")
+                                && accept_header != Some("application/cbor")
                             {
-                                res = HttpResponse::Ok();
-                            }
-                            // otherwise, it's probably a <form> submit or something: redirect back to the referrer
-                            else {
-                                let referer = req
-                                    .headers()
-                                    .get("Referer")
-                                    .and_then(|value| value.to_str().ok())
-                                    .unwrap_or("/");
-                                res = HttpResponse::SeeOther();
-                                res.insert_header(("Location", referer))
-                                    .content_type("application/json");
+                                // Location will already be set if redirect() has been used
+                                let has_location_set =
+                                    res_parts.headers.get("Location").is_some();
+                                if !has_location_set {
+                                    let referer = req
+                                        .headers()
+                                        .get("Referer")
+                                        .and_then(|value| value.to_str().ok())
+                                        .unwrap_or("/");
+                                    res = HttpResponse::SeeOther();
+                                    res.insert_header(("Location", referer))
+                                        .content_type("application/json");
+                                }
                             };
                             // Override StatusCode if it was set in a Resource or Element
                             if let Some(status) = res_parts.status {
@@ -288,7 +292,12 @@ pub fn handle_server_fns_with_context(
                 } else {
                     HttpResponse::BadRequest().body(format!(
                         "Could not find a server function at the route {:?}. \
-                         \n\nIt's likely that you need to call \
+                         \n\nIt's likely that either 
+                         1. The API prefix you specify in the `#[server]` \
+                         macro doesn't match the prefix at which your server \
+                         function handler is mounted, or \n2. You are on a \
+                         platform that doesn't support automatic server \
+                         function registration and you need to call \
                          ServerFn::register_explicit() on the server function \
                          type, somewhere in your `main` function.",
                         req.path()
@@ -724,6 +733,8 @@ fn provide_contexts(
     provide_context(cx, res_options);
     provide_context(cx, req.clone());
     provide_server_redirect(cx, move |path| redirect(cx, path));
+    #[cfg(feature = "nonce")]
+    leptos::nonce::provide_nonce(cx);
 }
 
 fn leptos_corrected_path(req: &HttpRequest) -> String {
@@ -788,8 +799,11 @@ async fn build_stream_response(
     // wait for any blocking resources to load before pulling metadata
     let first_app_chunk = stream.next().await.unwrap_or_default();
 
-    let (head, tail) =
-        html_parts_separated(options, use_context::<MetaContext>(cx).as_ref());
+    let (head, tail) = html_parts_separated(
+        cx,
+        options,
+        use_context::<MetaContext>(cx).as_ref(),
+    );
 
     let mut stream = Box::pin(
         futures::stream::once(async move { head.clone() })

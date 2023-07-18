@@ -59,9 +59,7 @@ pub fn render_to_stream_in_order_with_prefix(
     crate::console_error(
         "\n[DANGER] You have both `csr` and `ssr` or `hydrate` and `ssr` \
          enabled as features, which may cause issues like <Suspense/>` \
-         failing to work silently. `csr` is enabled by default on `leptos`, \
-         and can be disabled by adding `default-features = false` to your \
-         `leptos` dependency.\n",
+         failing to work silently.\n",
     );
 
     let (stream, runtime, _) =
@@ -126,24 +124,33 @@ pub fn render_to_stream_in_order_with_prefix_undisposed_with_context(
         handle_chunks(cx, tx, remaining_chunks).await;
     });
 
-    let stream = futures::stream::once(async move {
-        let prefix = prefix_rx.await.expect("to receive prefix");
-        format!(
-            r#"
+    let nonce = crate::nonce::use_nonce(cx);
+    let nonce_str = nonce
+        .as_ref()
+        .map(|nonce| format!(" nonce=\"{nonce}\""))
+        .unwrap_or_default();
+
+    let stream = futures::stream::once({
+        let nonce_str = nonce_str.clone();
+        async move {
+            let prefix = prefix_rx.await.expect("to receive prefix");
+            format!(
+                r#"
         {prefix}
-        <script>
+        <script{nonce_str}>
             __LEPTOS_PENDING_RESOURCES = {pending_resources};
             __LEPTOS_RESOLVED_RESOURCES = new Map();
             __LEPTOS_RESOURCE_RESOLVERS = new Map();
         </script>
       "#
-        )
+            )
+        }
     })
     .chain(rx)
     .chain(
         futures::stream::once(async move {
             let serializers = cx.serialization_resolvers();
-            render_serializers(serializers)
+            render_serializers(nonce_str, serializers)
         })
         .flatten(),
     );

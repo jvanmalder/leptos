@@ -18,6 +18,8 @@ mod logging;
 mod macro_helpers;
 pub mod math;
 mod node_ref;
+/// Utilities for exporting nonces to be used for a Content Security Policy.
+pub mod nonce;
 pub mod ssr;
 pub mod ssr_in_order;
 pub mod svg;
@@ -33,7 +35,7 @@ pub use html::HtmlElement;
 use html::{AnyElement, ElementDescriptor};
 pub use hydration::{HydrationCtx, HydrationKey};
 use leptos_reactive::Scope;
-#[cfg(feature = "stable")]
+#[cfg(not(feature = "nightly"))]
 use leptos_reactive::{
     MaybeSignal, Memo, ReadSignal, RwSignal, Signal, SignalGet,
 };
@@ -143,7 +145,7 @@ where
     }
 }
 
-#[cfg(feature = "stable")]
+#[cfg(not(feature = "nightly"))]
 impl<T> IntoView for ReadSignal<T>
 where
     T: IntoView + Clone,
@@ -156,7 +158,7 @@ where
         DynChild::new(move || self.get()).into_view(cx)
     }
 }
-#[cfg(feature = "stable")]
+#[cfg(not(feature = "nightly"))]
 impl<T> IntoView for RwSignal<T>
 where
     T: IntoView + Clone,
@@ -169,7 +171,7 @@ where
         DynChild::new(move || self.get()).into_view(cx)
     }
 }
-#[cfg(feature = "stable")]
+#[cfg(not(feature = "nightly"))]
 impl<T> IntoView for Memo<T>
 where
     T: IntoView + Clone,
@@ -182,7 +184,7 @@ where
         DynChild::new(move || self.get()).into_view(cx)
     }
 }
-#[cfg(feature = "stable")]
+#[cfg(not(feature = "nightly"))]
 impl<T> IntoView for Signal<T>
 where
     T: IntoView + Clone,
@@ -195,7 +197,7 @@ where
         DynChild::new(move || self.get()).into_view(cx)
     }
 }
-#[cfg(feature = "stable")]
+#[cfg(not(feature = "nightly"))]
 impl<T> IntoView for MaybeSignal<T>
 where
     T: IntoView + Clone,
@@ -414,11 +416,18 @@ impl Comment {
 
                 Self { content }
             } else {
+                #[cfg(not(feature = "hydrate"))]
+                {
+                    _ = id;
+                    _ = closing;
+                }
+
                 let node = COMMENT.with(|comment| comment.clone_node().unwrap());
 
                 #[cfg(debug_assertions)]
                 node.set_text_content(Some(&format!(" {content} ")));
 
+                #[cfg(feature = "hydrate")]
                 if HydrationCtx::is_hydrating() {
                     let id = HydrationCtx::to_string(id, closing);
 
@@ -483,6 +492,9 @@ impl Text {
 
 /// A leptos view which can be mounted to the DOM.
 #[derive(Clone, PartialEq, Eq)]
+#[must_use = "You are creating a View but not using it. An unused view can \
+              cause your view to be rendered as () unexpectedly, and it can \
+              also cause issues with client-side hydration."]
 pub enum View {
     /// HTML element node.
     Element(Element),
@@ -729,7 +741,7 @@ impl View {
                 c.children.iter().cloned().for_each(|c| {
                   let event_handler = event_handler.clone();
 
-                  c.on(event.clone(), Box::new(move |e| event_handler.borrow_mut()(e)));
+                  _ = c.on(event.clone(), Box::new(move |e| event_handler.borrow_mut()(e)));
                 });
               }
               Self::CoreComponent(c) => match c {
@@ -838,9 +850,7 @@ where
     crate::console_warn(
         "You have both `csr` and `ssr` or `hydrate` and `ssr` enabled as \
          features, which may cause issues like <Suspense/>` failing to work \
-         silently. `csr` is enabled by default on `leptos`, and can be \
-         disabled by adding `default-features = false` to your `leptos` \
-         dependency.",
+         silently.",
     );
 
     cfg_if! {

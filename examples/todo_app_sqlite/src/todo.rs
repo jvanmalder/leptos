@@ -4,26 +4,20 @@ use leptos_meta::*;
 use leptos_router::*;
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ssr", derive(sqlx::FromRow))]
+pub struct Todo {
+    id: u16,
+    title: String,
+    completed: bool,
+}
+
 cfg_if! {
     if #[cfg(feature = "ssr")] {
         use sqlx::{Connection, SqliteConnection};
 
         pub async fn db() -> Result<SqliteConnection, ServerFnError> {
             Ok(SqliteConnection::connect("sqlite:Todos.db").await?)
-        }
-
-        #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, sqlx::FromRow)]
-        pub struct Todo {
-            id: u16,
-            title: String,
-            completed: bool,
-        }
-    } else {
-        #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-        pub struct Todo {
-            id: u16,
-            title: String,
-            completed: bool,
         }
     }
 }
@@ -92,10 +86,8 @@ pub fn TodoApp(cx: Scope) -> impl IntoView {
             </header>
             <main>
                 <Routes>
-                    <Route path="" view=|cx| view! {
-                        cx,
-                        <Todos/>
-                    }/>
+                    <Route path="" view=Todos/>
+                    <Route path="/*any" view=NotFound/>
                 </Routes>
             </main>
         </Router>
@@ -199,4 +191,15 @@ pub fn Todos(cx: Scope) -> impl IntoView {
             </Transition>
         </div>
     }
+}
+
+#[component]
+fn NotFound(cx: Scope) -> impl IntoView {
+    #[cfg(feature = "ssr")]
+    {
+        let resp = expect_context::<leptos_actix::ResponseOptions>(cx);
+        resp.set_status(actix_web::http::StatusCode::NOT_FOUND);
+    }
+
+    view! { cx, <h1>"Not Found"</h1> }
 }

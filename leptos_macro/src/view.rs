@@ -582,6 +582,13 @@ fn attribute_to_tokens_ssr<'a>(
     {
         // ignore props for SSR
         // ignore classes and styles: we'll handle these separately
+        if name.starts_with("prop:") {
+            let value = attr.value();
+            exprs_for_compiler.push(quote! {
+                #[allow(unused_braces)]
+                { _ = #value; }
+            });
+        }
     } else if name == "inner_html" {
         return attr.value();
     } else {
@@ -1367,8 +1374,8 @@ pub(crate) fn parse_event_name(name: &str) -> (TokenStream, bool, bool) {
     let is_custom = event_type == "Custom";
 
     let Ok(event_type) = event_type.parse::<TokenStream>() else {
-            abort!(event_type, "couldn't parse event name");
-        };
+        abort!(event_type, "couldn't parse event name");
+    };
 
     let event_type = if is_custom {
         quote! { Custom::new(#name) }
@@ -1397,7 +1404,10 @@ pub(crate) fn slot_to_tokens(
     let span = node.name().span();
 
     let Some(parent_slots) = parent_slots else {
-        proc_macro_error::emit_error!(span, "slots cannot be used inside HTML elements");
+        proc_macro_error::emit_error!(
+            span,
+            "slots cannot be used inside HTML elements"
+        );
         return;
     };
 
@@ -1543,6 +1553,7 @@ pub(crate) fn component_to_tokens(
     global_class: Option<&TokenTree>,
 ) -> TokenStream {
     let name = node.name();
+    #[cfg(debug_assertions)]
     let component_name = ident_from_tag_name(node.name());
     let span = node.name().span();
 
@@ -1675,6 +1686,7 @@ pub(crate) fn component_to_tokens(
         }
     });
 
+    #[allow(unused_mut)] // used in debug
     let mut component = quote! {
         ::leptos::component_view(
             &#name,
@@ -2110,6 +2122,7 @@ impl IdeTagHelper {
     ///     open_tag(open_tag.props().slots().children().build())
     /// }
     /// ```
+    #[cfg(debug_assertions)]
     pub fn add_component_completion(
         component: &mut TokenStream,
         node: &NodeElement,
