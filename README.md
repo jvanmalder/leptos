@@ -88,8 +88,6 @@ targets = ["wasm32-unknown-unknown"]
 
 The `nightly` feature enables the function call syntax for accessing and setting signals, as opposed to `.get()` and `.set()`. This leads to a consistent mental model in which accessing a reactive value of any kind (a signal, memo, or derived signal) is always represented as a function call. This is only possible with nightly Rust and the `nightly` feature.
 
-> Note: The `nightly` feature is present on the main branch version right now, but not in 0.3.x. For 0.3.x, nightly is the default and `stable` has a special feature.
-
 ## `cargo-leptos`
 
 [`cargo-leptos`](https://github.com/leptos-rs/cargo-leptos) is a build tool that's designed to make it easy to build apps that run on both the client and the server, with seamless integration. The best way to get started with a real Leptos project right now is to use `cargo-leptos` and our starter templates for [Actix](https://github.com/leptos-rs/start) or [Axum](https://github.com/leptos-rs/start-axum).
@@ -107,7 +105,7 @@ Open browser to [http://localhost:3000/](http://localhost:3000/).
 
 ### What’s up with the name?
 
-_Leptos_ (λεπτός) is an ancient Greek word meaning “thin, light, refine, fine-grained.” To me, a classicist and not a dog owner, it evokes the lightweight reactive system that powers the framework. I've since learned the same word is at the root of the medical term “leptospirosis,” a blood infection that affects humans and animals... My bad. No dogs were harmed in the creation of this framework.
+_Leptos_ (λεπτός) is an ancient Greek word meaning “thin, light, refined, fine-grained.” To me, a classicist and not a dog owner, it evokes the lightweight reactive system that powers the framework. I've since learned the same word is at the root of the medical term “leptospirosis,” a blood infection that affects humans and animals... My bad. No dogs were harmed in the creation of this framework.
 
 ### Is it production ready?
 

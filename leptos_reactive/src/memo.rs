@@ -57,15 +57,15 @@ use std::{any::Any, cell::RefCell, fmt, marker::PhantomData, rc::Rc};
 /// });
 ///
 /// // instead, we create a memo
-/// // 🆗 run #1: the calculation runs once immediately
+/// // ✅ creation: the computation does not run on creation, because memos are lazy
 /// let memoized = create_memo(cx, move |_| really_expensive_computation(value.get()));
 /// create_effect(cx, move |_| {
-///   // 🆗 reads the current value of the memo
+///   // 🆗 run #1: reading the memo for the first time causes the computation to run for the first time
 ///   //    can be `memoized()` on nightly
 ///   log::debug!("memoized = {}", memoized.get());
 /// });
 /// create_effect(cx, move |_| {
-///   // ✅ reads the current value **without re-running the calculation**
+///   // ✅ reads the current value again **without re-running the calculation**
 ///   let value = memoized.get();
 ///   // do something else...
 /// });
@@ -149,15 +149,15 @@ where
 /// });
 ///
 /// // instead, we create a memo
-/// // 🆗 run #1: the calculation runs once immediately
+//  // ✅ creation: the computation does not run on creation, because memos are lazy
 /// let memoized = create_memo(cx, move |_| really_expensive_computation(value.get()));
 /// create_effect(cx, move |_| {
-///  // 🆗 reads the current value of the memo
+///   // 🆗 run #1: reading the memo for the first time causes the computation to run for the first time
+///   //    can be `memoized()` on nightly
 ///   log::debug!("memoized = {}", memoized.get());
 /// });
 /// create_effect(cx, move |_| {
-///   // ✅ reads the current value **without re-running the calculation**
-///   //    can be `memoized()` on nightly
+///   // ✅ reads the current value again **without re-running the calculation**
 ///   let value = memoized.get();
 ///   // do something else...
 /// });
@@ -179,13 +179,7 @@ where
     T: 'static,
 {
     fn clone(&self) -> Self {
-        Self {
-            runtime: self.runtime,
-            id: self.id,
-            ty: PhantomData,
-            #[cfg(any(debug_assertions, feature = "ssr"))]
-            defined_at: self.defined_at,
-        }
+        *self
     }
 }
 

@@ -20,32 +20,19 @@ enum TagType {
     Math,
 }
 
+// Keep list alphabetized for binary search
 const TYPED_EVENTS: [&str; 126] = [
-    "afterprint",
-    "beforeprint",
-    "beforeunload",
-    "gamepadconnected",
-    "gamepaddisconnected",
-    "hashchange",
-    "languagechange",
-    "message",
-    "messageerror",
-    "offline",
-    "online",
-    "pagehide",
-    "pageshow",
-    "popstate",
-    "rejectionhandled",
-    "storage",
-    "unhandledrejection",
-    "unload",
+    "DOMContentLoaded",
     "abort",
+    "afterprint",
     "animationcancel",
     "animationend",
     "animationiteration",
     "animationstart",
     "auxclick",
     "beforeinput",
+    "beforeprint",
+    "beforeunload",
     "blur",
     "canplay",
     "canplaythrough",
@@ -56,8 +43,12 @@ const TYPED_EVENTS: [&str; 126] = [
     "compositionstart",
     "compositionupdate",
     "contextmenu",
+    "copy",
     "cuechange",
+    "cut",
     "dblclick",
+    "devicemotion",
+    "deviceorientation",
     "drag",
     "dragend",
     "dragenter",
@@ -73,17 +64,25 @@ const TYPED_EVENTS: [&str; 126] = [
     "focusin",
     "focusout",
     "formdata",
+    "fullscreenchange",
+    "fullscreenerror",
+    "gamepadconnected",
+    "gamepaddisconnected",
     "gotpointercapture",
+    "hashchange",
     "input",
     "invalid",
     "keydown",
     "keypress",
     "keyup",
+    "languagechange",
     "load",
     "loadeddata",
     "loadedmetadata",
     "loadstart",
     "lostpointercapture",
+    "message",
+    "messageerror",
     "mousedown",
     "mouseenter",
     "mouseleave",
@@ -91,6 +90,12 @@ const TYPED_EVENTS: [&str; 126] = [
     "mouseout",
     "mouseover",
     "mouseup",
+    "offline",
+    "online",
+    "orientationchange",
+    "pagehide",
+    "pageshow",
+    "paste",
     "pause",
     "play",
     "playing",
@@ -98,12 +103,17 @@ const TYPED_EVENTS: [&str; 126] = [
     "pointerdown",
     "pointerenter",
     "pointerleave",
+    "pointerlockchange",
+    "pointerlockerror",
     "pointermove",
     "pointerout",
     "pointerover",
     "pointerup",
+    "popstate",
     "progress",
     "ratechange",
+    "readystatechange",
+    "rejectionhandled",
     "reset",
     "resize",
     "scroll",
@@ -115,6 +125,7 @@ const TYPED_EVENTS: [&str; 126] = [
     "selectstart",
     "slotchange",
     "stalled",
+    "storage",
     "submit",
     "suspend",
     "timeupdate",
@@ -127,6 +138,9 @@ const TYPED_EVENTS: [&str; 126] = [
     "transitionend",
     "transitionrun",
     "transitionstart",
+    "unhandledrejection",
+    "unload",
+    "visibilitychange",
     "volumechange",
     "waiting",
     "webkitanimationend",
@@ -134,20 +148,9 @@ const TYPED_EVENTS: [&str; 126] = [
     "webkitanimationstart",
     "webkittransitionend",
     "wheel",
-    "DOMContentLoaded",
-    "devicemotion",
-    "deviceorientation",
-    "orientationchange",
-    "copy",
-    "cut",
-    "paste",
-    "fullscreenchange",
-    "fullscreenerror",
-    "pointerlockchange",
-    "pointerlockerror",
-    "readystatechange",
-    "visibilitychange",
 ];
+
+const CUSTOM_EVENT: &str = "Custom";
 
 pub(crate) fn render_view(
     cx: &Ident,
@@ -348,10 +351,13 @@ fn root_element_to_tokens_ssr(
         // We can use open_tag.span(), to provide simmilar(to name span) diagnostic
         // in case of expansion error, but it will also higlight "<" token.
         let typed_element_name = if is_custom_element {
-            Ident::new("Custom", Span::call_site())
+            Ident::new(CUSTOM_EVENT, Span::call_site())
         } else {
             let camel_cased = camel_case_tag_name(
-                &tag_name.replace("svg::", "").replace("math::", ""),
+                tag_name
+                    .trim_start_matches("svg::")
+                    .trim_start_matches("math::")
+                    .trim_end_matches('_'),
             );
             Ident::new(&camel_cased, Span::call_site())
         };
@@ -517,6 +523,17 @@ fn element_to_tokens_ssr(
                                 &value.replace('{', "\\{").replace('}', "\\}"),
                             );
                         }
+                        Node::RawText(r) => {
+                            let value = r.to_string_best();
+                            let value = if is_script_or_style {
+                                value.into()
+                            } else {
+                                html_escape::encode_safe(&value)
+                            };
+                            template.push_str(
+                                &value.replace('{', "\\{").replace('}', "\\}"),
+                            );
+                        }
                         Node::Block(NodeBlock::ValidBlock(block)) => {
                             if let Some(value) =
                                 block_to_primitive_expression(block)
@@ -551,7 +568,7 @@ fn element_to_tokens_ssr(
             }
 
             template.push_str("</");
-            template.push_str(&node.name().to_string());
+            template.push_str(tag_name);
             template.push('>');
         }
     }
@@ -1225,7 +1242,7 @@ fn attribute_to_tokens(
         };
         let undelegated_ident = match &node.key {
             NodeName::Punctuated(parts) => parts.last().and_then(|last| {
-                if last == "undelegated" {
+                if last.to_string() == "undelegated" {
                     Some(last)
                 } else {
                     None
@@ -1246,9 +1263,8 @@ fn attribute_to_tokens(
         let event_type = if is_custom {
             event_type
         } else if let Some(ev_name) = event_name_ident {
-            let span = ev_name.span();
-            quote_spanned! {
-                span => #ev_name
+            quote! {
+                #ev_name
             }
         } else {
             event_type
@@ -1256,9 +1272,8 @@ fn attribute_to_tokens(
 
         let event_type = if is_force_undelegated {
             let undelegated = if let Some(undelegated) = undelegated_ident {
-                let span = undelegated.span();
-                quote_spanned! {
-                    span => #undelegated
+                quote! {
+                    #undelegated
                 }
             } else {
                 quote! { undelegated }
@@ -1366,12 +1381,10 @@ fn attribute_to_tokens(
 pub(crate) fn parse_event_name(name: &str) -> (TokenStream, bool, bool) {
     let (name, is_force_undelegated) = parse_event(name);
 
-    let event_type = TYPED_EVENTS
-        .iter()
-        .find(|e| **e == name)
-        .copied()
-        .unwrap_or("Custom");
-    let is_custom = event_type == "Custom";
+    let (event_type, is_custom) = TYPED_EVENTS
+        .binary_search(&name)
+        .map(|_| (name, false))
+        .unwrap_or((CUSTOM_EVENT, true));
 
     let Ok(event_type) = event_type.parse::<TokenStream>() else {
         abort!(event_type, "couldn't parse event name");
@@ -1699,8 +1712,10 @@ pub(crate) fn component_to_tokens(
         )
     };
 
-    #[cfg(debug_assertions)]
-    IdeTagHelper::add_component_completion(&mut component, node);
+    // (Temporarily?) removed
+    // See note on the function itself below.
+    /* #[cfg(debug_assertions)]
+    IdeTagHelper::add_component_completion(cx, &mut component, node); */
 
     if events.is_empty() {
         component
@@ -1729,10 +1744,9 @@ pub(crate) fn event_from_attribute_node(
     let (name, name_undelegated) = parse_event(&event_name);
 
     let event_type = TYPED_EVENTS
-        .iter()
-        .find(|e| **e == name)
-        .copied()
-        .unwrap_or("Custom");
+        .binary_search(&name)
+        .map(|_| (name))
+        .unwrap_or(CUSTOM_EVENT);
 
     let Ok(event_type) = event_type.parse::<TokenStream>() else {
         abort!(attr.key, "couldn't parse event name");
@@ -1819,33 +1833,19 @@ fn is_custom_element(tag: &str) -> bool {
 fn is_self_closing(node: &NodeElement) -> bool {
     // self-closing tags
     // https://developer.mozilla.org/en-US/docs/Glossary/Empty_element
-    matches!(
-        node.name().to_string().as_str(),
-        "area"
-            | "base"
-            | "br"
-            | "col"
-            | "embed"
-            | "hr"
-            | "img"
-            | "input"
-            | "link"
-            | "meta"
-            | "param"
-            | "source"
-            | "track"
-            | "wbr"
-    )
+    // Keep list alphabetized for binary search
+    [
+        "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
+        "meta", "param", "source", "track", "wbr",
+    ]
+    .binary_search(&node.name().to_string().as_str())
+    .is_ok()
 }
 
 fn camel_case_tag_name(tag_name: &str) -> String {
     let mut chars = tag_name.chars();
     let first = chars.next();
-    let underscore = if tag_name == "option" || tag_name == "use" {
-        "_"
-    } else {
-        ""
-    };
+    let underscore = if tag_name == "option" { "_" } else { "" };
     first
         .map(|f| f.to_ascii_uppercase())
         .into_iter()
@@ -1855,109 +1855,113 @@ fn camel_case_tag_name(tag_name: &str) -> String {
 }
 
 fn is_svg_element(tag: &str) -> bool {
-    matches!(
-        tag,
-        "animate"
-            | "animateMotion"
-            | "animateTransform"
-            | "circle"
-            | "clipPath"
-            | "defs"
-            | "desc"
-            | "discard"
-            | "ellipse"
-            | "feBlend"
-            | "feColorMatrix"
-            | "feComponentTransfer"
-            | "feComposite"
-            | "feConvolveMatrix"
-            | "feDiffuseLighting"
-            | "feDisplacementMap"
-            | "feDistantLight"
-            | "feDropShadow"
-            | "feFlood"
-            | "feFuncA"
-            | "feFuncB"
-            | "feFuncG"
-            | "feFuncR"
-            | "feGaussianBlur"
-            | "feImage"
-            | "feMerge"
-            | "feMergeNode"
-            | "feMorphology"
-            | "feOffset"
-            | "fePointLight"
-            | "feSpecularLighting"
-            | "feSpotLight"
-            | "feTile"
-            | "feTurbulence"
-            | "filter"
-            | "foreignObject"
-            | "g"
-            | "hatch"
-            | "hatchpath"
-            | "image"
-            | "line"
-            | "linearGradient"
-            | "marker"
-            | "mask"
-            | "metadata"
-            | "mpath"
-            | "path"
-            | "pattern"
-            | "polygon"
-            | "polyline"
-            | "radialGradient"
-            | "rect"
-            | "set"
-            | "stop"
-            | "svg"
-            | "switch"
-            | "symbol"
-            | "text"
-            | "textPath"
-            | "tspan"
-            | "use"
-            | "use_"
-            | "view"
-    )
+    // Keep list alphabetized for binary search
+    [
+        "animate",
+        "animateMotion",
+        "animateTransform",
+        "circle",
+        "clipPath",
+        "defs",
+        "desc",
+        "discard",
+        "ellipse",
+        "feBlend",
+        "feColorMatrix",
+        "feComponentTransfer",
+        "feComposite",
+        "feConvolveMatrix",
+        "feDiffuseLighting",
+        "feDisplacementMap",
+        "feDistantLight",
+        "feDropShadow",
+        "feFlood",
+        "feFuncA",
+        "feFuncB",
+        "feFuncG",
+        "feFuncR",
+        "feGaussianBlur",
+        "feImage",
+        "feMerge",
+        "feMergeNode",
+        "feMorphology",
+        "feOffset",
+        "fePointLight",
+        "feSpecularLighting",
+        "feSpotLight",
+        "feTile",
+        "feTurbulence",
+        "filter",
+        "foreignObject",
+        "g",
+        "hatch",
+        "hatchpath",
+        "image",
+        "line",
+        "linearGradient",
+        "marker",
+        "mask",
+        "metadata",
+        "mpath",
+        "path",
+        "pattern",
+        "polygon",
+        "polyline",
+        "radialGradient",
+        "rect",
+        "set",
+        "stop",
+        "svg",
+        "switch",
+        "symbol",
+        "text",
+        "textPath",
+        "tspan",
+        "use",
+        "use_",
+        "view",
+    ]
+    .binary_search(&tag)
+    .is_ok()
 }
 
 fn is_math_ml_element(tag: &str) -> bool {
-    matches!(
-        tag,
-        "math"
-            | "mi"
-            | "mn"
-            | "mo"
-            | "ms"
-            | "mspace"
-            | "mtext"
-            | "menclose"
-            | "merror"
-            | "mfenced"
-            | "mfrac"
-            | "mpadded"
-            | "mphantom"
-            | "mroot"
-            | "mrow"
-            | "msqrt"
-            | "mstyle"
-            | "mmultiscripts"
-            | "mover"
-            | "mprescripts"
-            | "msub"
-            | "msubsup"
-            | "msup"
-            | "munder"
-            | "munderover"
-            | "mtable"
-            | "mtd"
-            | "mtr"
-            | "maction"
-            | "annotation"
-            | "semantics"
-    )
+    // Keep list alphabetized for binary search
+    [
+        "annotation",
+        "maction",
+        "math",
+        "menclose",
+        "merror",
+        "mfenced",
+        "mfrac",
+        "mi",
+        "mmultiscripts",
+        "mn",
+        "mo",
+        "mover",
+        "mpadded",
+        "mphantom",
+        "mprescripts",
+        "mroot",
+        "mrow",
+        "ms",
+        "mspace",
+        "msqrt",
+        "mstyle",
+        "msub",
+        "msubsup",
+        "msup",
+        "mtable",
+        "mtd",
+        "mtext",
+        "mtr",
+        "munder",
+        "munderover",
+        "semantics",
+    ]
+    .binary_search(&tag)
+    .is_ok()
 }
 
 fn is_ambiguous_element(tag: &str) -> bool {
@@ -2108,6 +2112,19 @@ impl IdeTagHelper {
         }
     }
 
+    /* This has been (temporarily?) removed.
+     * Its purpose was simply to add syntax highlighting and IDE hints for
+     * component closing tags in debug mode by associating the closing tag
+     * ident with the component function.
+     *
+     * Doing this in a way that correctly inferred types, however, required
+     * duplicating the entire component constructor.
+     *
+     * In view trees with many nested components, this led to a massive explosion
+     * in compile times.
+     *
+     * See https://github.com/leptos-rs/leptos/issues/1283
+     *
     /// Add completion to the closing tag of the component.
     ///
     /// In order to ensure that generics are passed through correctly in the
@@ -2124,22 +2141,21 @@ impl IdeTagHelper {
     /// ```
     #[cfg(debug_assertions)]
     pub fn add_component_completion(
+        cx: &Ident,
         component: &mut TokenStream,
         node: &NodeElement,
     ) {
         // emit ide helper info
-        if node.close_tag.is_some() {
-            let constructor = component.clone();
+        if let Some(close_tag) = node.close_tag.as_ref().map(|c| &c.name) {
             *component = quote! {
-                if false {
-                    #[allow(unreachable_code)]
-                    #constructor
-                } else {
-                    #component
+                {
+                    let #close_tag = |cx| #component;
+                    #close_tag(#cx)
                 }
             }
         }
     }
+     */
 
     /// Returns `syn::Path`-like `TokenStream` to the fn in docs.
     /// If tag name is `Component` returns `None`.
