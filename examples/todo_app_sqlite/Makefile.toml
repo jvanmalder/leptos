@@ -1,17 +1,24 @@
-extend = { path = "../cargo-make/main.toml" }
+extend = [
+  { path = "../cargo-make/main.toml" },
+  { path = "../cargo-make/webdriver.toml" },
+  { path = "../cargo-make/cargo-leptos.toml" },
+]
 
-[tasks.check]
-clear = true
-dependencies = ["check-debug", "check-release"]
+[env]
+APP_PROCESS_NAME = "todo_app_sqlite"
 
-[tasks.check-debug]
-toolchain = "nightly"
+[tasks.integration-test]
+dependencies = [
+  "install-cargo-leptos",
+  "start-webdriver",
+  "test-e2e-with-auto-start",
+]
+
+[tasks.test-e2e-with-auto-start]
 command = "cargo"
-args = ["check-all-features"]
-install_crate = "cargo-all-features"
+args = ["leptos", "end-to-end"]
 
-[tasks.check-release]
-toolchain = "nightly"
+[tasks.test-ui]
+cwd = "./e2e"
 command = "cargo"
-args = ["check-all-features", "--release"]
-install_crate = "cargo-all-features"
+args = ["make", "test-ui", "${@}"]

@@ -357,10 +357,10 @@ fn fragments_to_chunks(
         r#"
                 <template id="{fragment_id}f">{html}</template>
                 <script{nonce_str}>
-                    var id = "{fragment_id}";
-                    var open = undefined;
-                    var close = undefined;
-                    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_COMMENT);
+                    (function() {{ let id = "{fragment_id}";
+                    let open = undefined;
+                    let close = undefined;
+                    let walker = document.createTreeWalker(document.body, NodeFilter.SHOW_COMMENT);
                     while(walker.nextNode()) {{
                          if(walker.currentNode.textContent == `suspense-open-${{id}}`) {{
                            open = walker.currentNode;
@@ -368,12 +368,12 @@ fn fragments_to_chunks(
                            close = walker.currentNode;
                          }}
                       }}
-                    var range = new Range();
+                    let range = new Range();
                     range.setStartAfter(open);
                     range.setEndBefore(close);
                     range.deleteContents();
-                    var tpl = document.getElementById("{fragment_id}f");
-                    close.parentNode.insertBefore(tpl.content.cloneNode(true), close);
+                    let tpl = document.getElementById("{fragment_id}f");
+                    close.parentNode.insertBefore(tpl.content.cloneNode(true), close);}})()
                 </script>
                 "#
       )
@@ -483,26 +483,36 @@ impl View {
                             true,
                             Box::new(move || {
                                 if let Some(child) = *child {
-                                    // On debug builds, `DynChild` has two marker nodes,
-                                    // so there is no way for the text to be merged with
-                                    // surrounding text when the browser parses the HTML,
-                                    // but in release, `DynChild` only has a trailing marker,
-                                    // and the browser automatically merges the dynamic text
-                                    // into one single node, so we need to artificially make the
-                                    // browser create the dynamic text as it's own text node
                                     if let View::Text(t) = child {
-                                        if !cfg!(debug_assertions) {
-                                            format!(
-                                                "<!>{}",
-                                                html_escape::encode_safe(
-                                                    &t.content
-                                                )
-                                            )
-                                            .into()
+                                        // if we don't check if the string is empty,
+                                        // the HTML is an empty string; but an empty string
+                                        // is not a text node in HTML, so can't be updated
+                                        // in the future. so we put a one-space text node instead
+                                        let was_empty = t.content.is_empty();
+                                        let content = if was_empty {
+                                            " ".into()
                                         } else {
-                                            html_escape::encode_safe(&t.content)
+                                            t.content
+                                        };
+                                        // escape content unless we're in a <script> or <style>
+                                        let content = if dont_escape_text {
+                                            content
+                                        } else {
+                                            html_escape::encode_safe(&content)
                                                 .to_string()
                                                 .into()
+                                        };
+                                        // On debug builds, `DynChild` has two marker nodes,
+                                        // so there is no way for the text to be merged with
+                                        // surrounding text when the browser parses the HTML,
+                                        // but in release, `DynChild` only has a trailing marker,
+                                        // and the browser automatically merges the dynamic text
+                                        // into one single node, so we need to artificially make the
+                                        // browser create the dynamic text as it's own text node
+                                        if !cfg!(debug_assertions) {
+                                            format!("<!>{content}",).into()
+                                        } else {
+                                            content
                                         }
                                     } else {
                                         child.render_to_string_helper(
@@ -718,12 +728,12 @@ pub(crate) fn render_serializers(
         let json = json.replace('<', "\\u003c");
         format!(
             r#"<script{nonce_str}>
-                  var val = {json:?};
+                  (function() {{ let val = {json:?};
                   if(__LEPTOS_RESOURCE_RESOLVERS.get({id})) {{
                       __LEPTOS_RESOURCE_RESOLVERS.get({id})(val)
                   }} else {{
                       __LEPTOS_RESOLVED_RESOURCES.set({id}, val);
-                  }}
+                  }} }})();
               </script>"#,
         )
     })
